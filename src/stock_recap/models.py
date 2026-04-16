@@ -1,0 +1,187 @@
+"""所有 Pydantic 数据模型。"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, Field
+
+# ─── 类型别名 ──────────────────────────────────────────────────────────────────
+Mode = Literal["daily", "strategy"]
+Provider = Literal["mock", "akshare", "live"]
+LlmBackend = Literal["openai", "ollama", "cursor-agent"]
+
+
+# ─── 市场快照 ──────────────────────────────────────────────────────────────────
+class MarketSnapshot(BaseModel):
+    asof: str = Field(description="采集时间（UTC ISO）")
+    provider: Provider
+    date: str = Field(description="交易日 YYYY-MM-DD")
+    is_trading_day: bool = Field(default=True, description="是否为交易日")
+    sources: List[Dict[str, Any]] = Field(
+        default_factory=list, description="数据来源列表（可追溯）"
+    )
+
+    # A 股核心
+    a_share_indices: Dict[str, Any] = Field(default_factory=dict)
+    market_sentiment: Dict[str, Any] = Field(default_factory=dict)
+    sector_performance: Dict[str, Any] = Field(default_factory=dict)
+
+    # 北向资金（原版缺失，新增）
+    northbound_flow: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="北向资金净流入情况（亿元）",
+    )
+
+    # 海外市场（原版 live 模式全空，新增采集）
+    us_market: Dict[str, Any] = Field(default_factory=dict)
+    futures: Dict[str, Any] = Field(default_factory=dict)
+    commodities: Dict[str, Any] = Field(default_factory=dict)
+
+
+# ─── 特征 ──────────────────────────────────────────────────────────────────────
+class Features(BaseModel):
+    market_strength: Optional[float] = None
+    volume_level: Optional[float] = None
+    northbound_signal: Optional[float] = None
+    sector_rotation: Dict[str, Any] = Field(default_factory=dict)
+    macro_signal: Dict[str, Any] = Field(default_factory=dict)
+
+    # 文本摘要（注入 prompt）
+    index_view: str = ""
+    sector_view: str = ""
+    sentiment_view: str = ""
+    macro_view: str = ""
+
+
+# ─── 复盘输出结构 ───────────────────────────────────────────────────────────────
+class RecapDailySection(BaseModel):
+    title: str = Field(description="大类标题，例如：指数与情绪 / 资金与风格 / 板块与机会")
+    core_conclusion: str = Field(description="一句话核心结论")
+    bullets: List[str] = Field(
+        description="逻辑分析分点（结论先行，有因果链）", min_length=2
+    )
+
+
+class RecapDaily(BaseModel):
+    mode: Literal["daily"]
+    date: str
+    sections: List[RecapDailySection] = Field(min_length=3, max_length=3)
+    risks: List[str] = Field(default_factory=list)
+    disclaimer: str = "本内容仅供参考，不构成投资建议。投资有风险，入市需谨慎。"
+
+
+class RecapStrategy(BaseModel):
+    mode: Literal["strategy"]
+    date: str
+    mainline_focus: List[str] = Field(min_length=1)
+    risk_warnings: List[str] = Field(min_length=1)
+    trading_logic: List[str] = Field(min_length=2)
+    disclaimer: str = "本内容仅供参考，不构成投资建议。投资有风险，入市需谨慎。"
+
+
+Recap = RecapDaily | RecapStrategy
+
+
+# ─── 进化笔记（LLM 自我分析产出） ────────────────────────────────────────────────
+class EvolutionNote(BaseModel):
+    """LLM 对历史复盘质量的分析产出，用于驱动 prompt 自动演进。"""
+
+    summary: str = Field(description="整体质量总结（1-3句）")
+    problems: List[str] = Field(
+        description="发现的问题：幻觉风险、格式漂移、内容空洞等", default_factory=list
+    )
+    praised_patterns: List[str] = Field(
+        description="用户好评的写法/结构（来自高分反馈）", default_factory=list
+    )
+    low_rated_patterns: List[str] = Field(
+        description="用户差评的写法/结构（来自低分反馈）", default_factory=list
+    )
+    prompt_suggestions: List[str] = Field(
+        description="对 system prompt 的具体修改建议（逐条可操作）", default_factory=list
+    )
+    should_bump_version: bool = Field(
+        description="是否建议升级 PROMPT_VERSION（有重大改进时为 True）",
+        default=False,
+    )
+
+
+# ─── 回测结果 ──────────────────────────────────────────────────────────────────
+class BacktestResult(BaseModel):
+    strategy_date: str = Field(description="策略复盘日期（次日策略是为哪天生成的）")
+    actual_date: str = Field(description="实际验证的行情日期")
+    predicted_sectors: List[str] = Field(description="策略预测的主线方向")
+    actual_top_sectors: List[str] = Field(description="实际涨幅前 10 板块")
+    hit_count: int = Field(description="命中数量")
+    hit_rate: float = Field(description="命中率 0-1")
+    detail: str = Field(description="命中情况说明")
+
+
+# ─── API 请求/响应 ─────────────────────────────────────────────────────────────
+class GenerateRequest(BaseModel):
+    mode: Mode = "daily"
+    provider: Provider = "live"
+    date: Optional[str] = Field(
+        default=None, description="YYYY-MM-DD；不传则用今天（本地时区）"
+    )
+    force_llm: bool = Field(default=True, description="是否调用 LLM")
+    model: Optional[str] = Field(
+        default=None,
+        description="覆盖模型名：openai:<m> / ollama:<m> / cursor-agent",
+    )
+    skip_trading_check: bool = Field(
+        default=False, description="跳过交易日检查（非交易日强制生成时使用）"
+    )
+
+
+class GenerateResponse(BaseModel):
+    request_id: str
+    created_at: str
+    prompt_version: str
+    model: Optional[str]
+    provider: Provider
+    snapshot: MarketSnapshot
+    features: Features
+    recap: Optional[Recap]
+    rendered_markdown: Optional[str]
+    rendered_wechat_text: Optional[str] = Field(
+        default=None, description="适合粘贴到企业微信的纯文本排版"
+    )
+    eval: Dict[str, Any] = Field(default_factory=dict)
+    memory_used: List[Dict[str, Any]] = Field(default_factory=list)
+    push_result: Optional[bool] = Field(
+        default=None, description="推送结果（True=成功，False=失败，None=未推送）"
+    )
+
+
+class FeedbackRequest(BaseModel):
+    request_id: str
+    rating: int = Field(ge=1, le=5)
+    tags: List[str] = Field(default_factory=list)
+    comment: str = ""
+
+
+# ─── 指标快照 ──────────────────────────────────────────────────────────────────
+class MetricsSnapshot(BaseModel):
+    total_runs: int = 0
+    success_runs: int = 0
+    failed_runs: int = 0
+    avg_latency_ms: float = 0.0
+    today_runs: int = 0
+    today_success: int = 0
+    current_prompt_version: str = ""
+    evolution_count: int = 0
+    avg_rating: Optional[float] = None
+    last_run_at: Optional[str] = None
+
+
+# ─── LLM token 统计 ────────────────────────────────────────────────────────────
+@dataclass
+class LlmTokens:
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+
+class LlmError(RuntimeError):
+    pass
