@@ -1,0 +1,8 @@
+{
+  "bundle_version": "2026-04-30",
+  "artifacts": {
+    "system_recap": "system_recap.md",
+    "pattern_extraction_system": "pattern_extraction_system.md",
+    "json_output_instruction": "json_output_instruction.md"
+  }
+}

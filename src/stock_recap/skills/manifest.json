@@ -1,0 +1,20 @@
+{
+  "bundle_version": "1.0.0",
+  "description": "Agent skills registry（与 resources/prompts 通用底座分层；扩展新任务时新增 SKILL + 本 manifest 条目）",
+  "mode_to_skill_id": {
+    "daily": "a_share.daily_recap",
+    "strategy": "a_share.strategy_nextday"
+  },
+  "skills": [
+    {
+      "id": "a_share.daily_recap",
+      "path": "a_share_daily_recap/SKILL.md",
+      "description": "A股日终复盘：输出结构与当日视角"
+    },
+    {
+      "id": "a_share.strategy_nextday",
+      "path": "a_share_strategy_nextday/SKILL.md",
+      "description": "A股次日策略：主线与交易逻辑侧重"
+    }
+  ]
+}

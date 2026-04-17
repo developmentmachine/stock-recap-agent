@@ -1,0 +1,39 @@
+services:
+  stock-recap:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      # 数据库：默认写入容器内 recap_system.db（多线程/多 worker 安全）；
+      # 生产建议挂卷到宿主机，见下面 volumes 示例。
+      RECAP_DB_PATH: ${RECAP_DB_PATH:-/data/recap_system.db}
+      RECAP_LOG_LEVEL: ${RECAP_LOG_LEVEL:-INFO}
+
+      # LLM 后端选择（openai / ollama / cursor-cli / gemini-cli；兼容 cursor-agent）
+      RECAP_LLM_BACKEND: ${RECAP_LLM_BACKEND:-openai}
+      RECAP_MODEL: ${RECAP_MODEL:-gpt-4.1-mini}
+
+      # API Keys
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+
+      # API 安全
+      RECAP_API_KEY: ${RECAP_API_KEY:-}
+
+      # 推送
+      RECAP_PUSH_ENABLED: ${RECAP_PUSH_ENABLED:-false}
+      RECAP_WXWORK_WEBHOOK_URL: ${RECAP_WXWORK_WEBHOOK_URL:-}
+
+      # 调度
+      RECAP_SCHEDULER_ENABLED: ${RECAP_SCHEDULER_ENABLED:-false}
+
+    # 推荐：挂卷到宿主机，避免容器重建后历史/进化笔记丢失
+    volumes:
+      - ./data:/data
+
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
