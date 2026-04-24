@@ -9,12 +9,14 @@ from stock_recap.config.settings import Settings
 from stock_recap.domain.models import (
     LlmError,
     LlmTokens,
+    LlmTransportError,
     Mode,
     Recap,
     RecapDaily,
     RecapStrategy,
 )
 from stock_recap.infrastructure.llm.parse import _stable_json, parse_and_validate
+from stock_recap.observability.runtime_context import current_budget
 
 logger = logging.getLogger("stock_recap.infrastructure.llm.providers.openai")
 
@@ -22,9 +24,14 @@ logger = logging.getLogger("stock_recap.infrastructure.llm.providers.openai")
 def _merge_tokens(tokens: LlmTokens, usage: Any) -> None:
     if not usage:
         return
-    tokens.input_tokens = (tokens.input_tokens or 0) + (getattr(usage, "prompt_tokens", 0) or 0)
-    tokens.output_tokens = (tokens.output_tokens or 0) + (getattr(usage, "completion_tokens", 0) or 0)
+    delta_in = getattr(usage, "prompt_tokens", 0) or 0
+    delta_out = getattr(usage, "completion_tokens", 0) or 0
+    tokens.input_tokens = (tokens.input_tokens or 0) + delta_in
+    tokens.output_tokens = (tokens.output_tokens or 0) + delta_out
     tokens.total_tokens = (tokens.input_tokens or 0) + (tokens.output_tokens or 0)
+    budget = current_budget.get()
+    if budget is not None:
+        budget.record_tokens(delta_in + delta_out)  # 超额抛 LlmBudgetExceeded
 
 
 def _tool_loop(
@@ -133,7 +140,7 @@ class OpenAiProvider:
             )
         except Exception as e:
             logger.warning(_stable_json({"event": "openai_call_failed", "error": str(e)}))
-            raise LlmError(str(e)) from e
+            raise LlmTransportError(str(e)) from e
 
         content = resp2.choices[0].message.content or ""
         _merge_tokens(tokens, getattr(resp2, "usage", None))

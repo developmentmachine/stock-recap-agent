@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Set
 
 from stock_recap.config.settings import Settings
+from stock_recap.observability.runtime_context import current_budget
 
 from stock_recap.infrastructure.tools.registry import (
     TOOL_SCHEMAS,
@@ -49,11 +50,21 @@ class RecapToolRunner:
         return [t for t in TOOL_SCHEMAS if t["function"]["name"] in allowed]
 
     def execute(self, name: str, arguments: Dict[str, Any], db_path: str) -> str:
+        """执行工具；若已绑定 ``AgentBudget``，先扣减额度（超限抛 ``LlmBudgetExceeded``）。"""
+        budget = current_budget.get()
+        if budget is not None:
+            budget.record_tool_call()  # 超额会直接抛 LlmBudgetExceeded
         return execute_tool(name, arguments, db_path=db_path)
 
     def prefetch_for_prompt(self, date: str, db_path: str) -> str:
-        """按当前启用工具集合预取；总开关关闭时返回空串。"""
+        """按当前启用工具集合预取；总开关关闭时返回空串。
+
+        预取被视作 N 次工具调用（每个启用工具 1 次），统一计入 budget。
+        """
         allowed = self.enabled_tool_names()
         if not allowed:
             return ""
+        budget = current_budget.get()
+        if budget is not None and len(allowed) > 0:
+            budget.record_tool_call(n=len(allowed))
         return prefetch_for_prompt(date, db_path=db_path, enabled_tools=allowed)

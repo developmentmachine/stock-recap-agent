@@ -17,14 +17,17 @@ from stock_recap.application.memory.manager import (
     load_recent_memory,
 )
 from stock_recap.application.orchestration.context import RecapAgentRunState
-from stock_recap.domain.models import GenerateResponse
+from stock_recap.domain.models import (
+    GenerateResponse,
+    LlmBudgetExceeded,
+    LlmBusinessError,
+)
 from stock_recap.infrastructure.data.collector import collect_snapshot
 from stock_recap.infrastructure.data.features import build_features
 from stock_recap.infrastructure.llm.backends import call_llm, model_effective
 from stock_recap.infrastructure.llm.eval import auto_eval
 from stock_recap.infrastructure.llm.prompts import build_messages
 from stock_recap.infrastructure.persistence.db import insert_run, load_feedback_summary
-from stock_recap.infrastructure.push import get_push_provider
 from stock_recap.observability.tracing import get_tracer
 from stock_recap.policy.guardrails import clamp_llm_messages, coerce_recap_output
 from stock_recap.presentation.render.renderers import render_markdown, render_wechat_text
@@ -33,6 +36,7 @@ from stock_recap.application.side_effects import (
     load_recent_backtests_simple,
     try_run_backtest,
 )
+from stock_recap.application.side_effects.push import push_recap as _push_recap
 
 logger = logging.getLogger("stock_recap.application.orchestration.pipeline")
 
@@ -122,12 +126,40 @@ def _phase_plan(state: RecapAgentRunState, tracer: Any) -> None:
         state.messages = cast(List[dict[str, str]], clamp_llm_messages(raw_messages))
 
 
+_CRITIC_FEEDBACK_TEMPLATE = (
+    "你的上一次输出被自动校验拦截，原因如下：\n"
+    "{reason}\n\n"
+    "请严格按既定 JSON schema 重新输出。"
+    "不要复述本条反馈，只输出符合 schema 的最终 JSON。"
+)
+
+
+def _inject_critic_feedback(state: RecapAgentRunState, reason: str) -> None:
+    """把 schema/parse 失败原因结构化注入 messages，供下一次 LLM 调用消化。
+
+    我们 **不** 拼接上一次的失败响应（避免污染 prompt 与暴露不可信文本），
+    只发一条 ``user`` 反馈说明 + 提醒 schema。
+    """
+    state.messages.append(
+        {
+            "role": "user",
+            "content": _CRITIC_FEEDBACK_TEMPLATE.format(reason=reason),
+        }
+    )
+
+
 def _phase_act(state: RecapAgentRunState, tracer: Any) -> None:
     req = state.request
     settings = state.settings
     with _span_phase(tracer, "recap.agent.act", {"agent.phase": "act", "llm.forced": req.force_llm}):
         assert state.snapshot is not None and state.features is not None
-        if req.force_llm:
+        if not req.force_llm:
+            return
+
+        max_attempts = 1 + max(0, int(settings.agent_critic_max_retries))
+        last_business_err: Optional[LlmBusinessError] = None
+
+        for attempt in range(max_attempts):
             try:
                 state.recap, state.tokens = call_llm(
                     settings=settings,
@@ -140,9 +172,66 @@ def _phase_act(state: RecapAgentRunState, tracer: Any) -> None:
                 state.recap = coerce_recap_output(state.recap)
                 state.rendered_markdown = render_markdown(state.recap)
                 state.rendered_wechat_text = render_wechat_text(state.recap)
+                state.llm_error = None
+                if attempt > 0:
+                    logger.info(
+                        _stable_json(
+                            {
+                                "event": "critic_retry_succeeded",
+                                "attempt": attempt + 1,
+                                "max_attempts": max_attempts,
+                            }
+                        )
+                    )
+                return
+            except LlmBudgetExceeded as e:
+                # 预算耗尽：不再 critic 重入；优雅落库给后续阶段。
+                state.budget_error = f"{e.kind}:{e.used}/{e.limit}"
+                state.llm_error = f"budget_exceeded({e.kind}: used={e.used} limit={e.limit})"
+                logger.warning(
+                    _stable_json(
+                        {
+                            "event": "act_budget_exceeded",
+                            "kind": e.kind,
+                            "used": e.used,
+                            "limit": e.limit,
+                            "attempt": attempt + 1,
+                        }
+                    )
+                )
+                return
+            except LlmBusinessError as e:
+                last_business_err = e
+                state.llm_error = f"business_error: {e}"
+                if attempt + 1 < max_attempts:
+                    state.critic_retries_used = attempt + 1
+                    _inject_critic_feedback(state, str(e))
+                    logger.warning(
+                        _stable_json(
+                            {
+                                "event": "critic_retry",
+                                "attempt": attempt + 1,
+                                "max_attempts": max_attempts,
+                                "reason": str(e),
+                            }
+                        )
+                    )
+                    continue
+                logger.error(
+                    _stable_json(
+                        {
+                            "event": "critic_retry_exhausted",
+                            "attempts": max_attempts,
+                            "reason": str(last_business_err),
+                        }
+                    )
+                )
+                return
             except Exception as e:
+                # 传输类错误已被 tenacity 重试过；这里是最终结果，不再 critic 重入。
                 state.llm_error = str(e)
                 logger.error(_stable_json({"event": "generate_failed", "error": state.llm_error}))
+                return
 
 
 def _phase_critique(state: RecapAgentRunState, tracer: Any) -> None:
@@ -211,13 +300,15 @@ def _phase_reflect(state: RecapAgentRunState, tracer: Any) -> None:
                 )
 
         if state.recap is not None:
-            provider = get_push_provider(settings)
-            if provider is not None:
-                try:
-                    state.push_result = provider.push(state.recap)
-                except Exception as e:
-                    logger.warning(_stable_json({"event": "push_failed", "error": str(e)}))
-                    state.push_result = False
+            # 走 push_recap：内置 (request_id, channel) 幂等账本（push_log），
+            # 重试 / outbox 兜底 / scheduler 重发都安全。
+            try:
+                state.push_result = _push_recap(
+                    settings, state.recap, request_id=request_id
+                )
+            except Exception as e:
+                logger.warning(_stable_json({"event": "push_failed", "error": str(e)}))
+                state.push_result = False
 
         if (
             not state.defer_evolution_backtest
@@ -273,8 +364,42 @@ def _finalize_span_attributes(state: RecapAgentRunState) -> None:
             span.set_attribute("recap.llm_error", True)
 
 
+def _check_budget_between_phases(state: RecapAgentRunState, name: str) -> bool:
+    """阶段间显式校验墙钟预算；超限则让后续阶段「轻量降级」。
+
+    返回 ``False`` 表示后续阶段应跳过 LLM/工具相关的重活，但 persist/reflect
+    仍要执行（落库带 budget_error 标记，便于离线分析）。
+    """
+    if state.budget is None:
+        return True
+    try:
+        state.budget.check()
+    except LlmBudgetExceeded as e:
+        if state.llm_error is None:
+            state.llm_error = f"budget_exceeded({e.kind}: used={e.used} limit={e.limit})"
+        if state.budget_error is None:
+            state.budget_error = f"{e.kind}:{e.used}/{e.limit}"
+        logger.warning(
+            _stable_json(
+                {
+                    "event": "phase_budget_exceeded",
+                    "phase_about_to_run": name,
+                    "kind": e.kind,
+                    "used": e.used,
+                    "limit": e.limit,
+                }
+            )
+        )
+        return False
+    return True
+
+
 def _run_all_phases(state: RecapAgentRunState, tracer: Any) -> GenerateResponse:
-    for _name, fn in _PHASE_ORDER:
+    for name, fn in _PHASE_ORDER:
+        ok = _check_budget_between_phases(state, name)
+        if not ok and name in {"act", "critique"}:
+            # 跳过 LLM 与评测，但 persist/reflect 仍执行
+            continue
         fn(state, tracer)
     _finalize_span_attributes(state)
     return _build_generate_response(state)
@@ -313,6 +438,16 @@ def iter_recap_agent_ndjson(state: RecapAgentRunState) -> Iterator[str]:
     try:
         for name, fn in _PHASE_ORDER:
             last_phase = name
+            ok = _check_budget_between_phases(state, name)
+            if not ok and name in {"act", "critique"}:
+                yield _ndjson_line(
+                    "phase",
+                    phase=name,
+                    skipped=True,
+                    reason="budget_exceeded",
+                    budget_error=state.budget_error,
+                )
+                continue
             fn(state, tracer)
             extra: dict[str, Any] = {}
             if state.snapshot is not None:
@@ -320,6 +455,8 @@ def iter_recap_agent_ndjson(state: RecapAgentRunState) -> Iterator[str]:
             if name == "act":
                 extra["has_recap"] = state.recap is not None
                 extra["llm_error"] = state.llm_error
+                if state.budget_error:
+                    extra["budget_error"] = state.budget_error
             yield _ndjson_line("phase", phase=name, **extra)
     except Exception as e:
         logger.exception(

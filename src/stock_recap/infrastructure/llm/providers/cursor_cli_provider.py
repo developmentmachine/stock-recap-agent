@@ -9,7 +9,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from stock_recap.config.settings import Settings
-from stock_recap.domain.models import LlmError, LlmTokens, Mode, Recap
+from stock_recap.domain.models import LlmError, LlmTokens, LlmTransportError, Mode, Recap
 from stock_recap.infrastructure.llm.parse import _stable_json, parse_and_validate
 from stock_recap.infrastructure.llm.providers._cli_shared import inject_prefetch
 
@@ -58,7 +58,7 @@ class CursorCliProvider:
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
             )
         except Exception as e:
-            raise LlmError(f"cursor-cli 启动失败: {e}") from e
+            raise LlmTransportError(f"cursor-cli 启动失败: {e}") from e
 
         stdout_lines: List[str] = []
         final_result_text: Optional[str] = None
@@ -79,7 +79,7 @@ class CursorCliProvider:
                     proc.kill()
                 except Exception:
                     pass
-                raise LlmError(f"cursor-cli 超时（>{settings.cursor_timeout_s}s）")
+                raise LlmTransportError(f"cursor-cli 超时（>{settings.cursor_timeout_s}s）")
 
             got = False
             if proc.stdout:
@@ -106,11 +106,11 @@ class CursorCliProvider:
         rc = proc.returncode or 0
         if rc != 0:
             err_tail = "".join(stdout_lines).strip()[-800:]
-            raise LlmError(f"cursor-cli 失败(code={rc}): {err_tail}")
+            raise LlmTransportError(f"cursor-cli 失败(code={rc}): {err_tail}")
 
         raw = final_result_text or "".join(assistant_text_parts) or "".join(stdout_lines)
         if not raw.strip():
-            raise LlmError("cursor-cli 无输出")
+            raise LlmTransportError("cursor-cli 无输出")
 
         recap = parse_and_validate(raw.strip(), mode)
         return recap, LlmTokens()

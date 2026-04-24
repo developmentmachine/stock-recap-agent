@@ -17,9 +17,11 @@ from stock_recap.application.side_effects.backtest import (
 )
 from stock_recap.application.side_effects.deferred import run_deferred_post_recap
 from stock_recap.application.side_effects.evolution import run_deferred_evolution
+from stock_recap.application.side_effects import outbox
 
 __all__ = [
     "load_recent_backtests_simple",
+    "outbox",
     "run_deferred_evolution",
     "run_deferred_post_recap",
     "try_run_backtest",

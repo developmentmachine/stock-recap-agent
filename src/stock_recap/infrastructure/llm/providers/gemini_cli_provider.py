@@ -8,7 +8,7 @@ import time
 from typing import Dict, List, Tuple
 
 from stock_recap.config.settings import Settings
-from stock_recap.domain.models import LlmError, LlmTokens, Mode, Recap
+from stock_recap.domain.models import LlmError, LlmTokens, LlmTransportError, Mode, Recap
 from stock_recap.infrastructure.llm.parse import _stable_json, parse_and_validate
 from stock_recap.infrastructure.llm.providers._cli_shared import inject_prefetch
 
@@ -60,7 +60,7 @@ class GeminiCliProvider:
                 env=env,
             )
         except Exception as e:
-            raise LlmError(f"gemini-cli 启动失败: {e}") from e
+            raise LlmTransportError(f"gemini-cli 启动失败: {e}") from e
 
         stdout_lines: List[str] = []
         last_log = 0.0
@@ -79,7 +79,7 @@ class GeminiCliProvider:
                     proc.kill()
                 except Exception:
                     pass
-                raise LlmError(f"gemini-cli 超时（>{settings.gemini_timeout_s}s）")
+                raise LlmTransportError(f"gemini-cli 超时（>{settings.gemini_timeout_s}s）")
 
             if proc.stdout:
                 line = proc.stdout.readline()
@@ -93,11 +93,11 @@ class GeminiCliProvider:
             stderr_out = ""
             if proc.stderr:
                 stderr_out = proc.stderr.read()[-500:]
-            raise LlmError(f"gemini-cli 失败(code={rc}): {stderr_out}")
+            raise LlmTransportError(f"gemini-cli 失败(code={rc}): {stderr_out}")
 
         raw = "".join(stdout_lines).strip()
         if not raw:
-            raise LlmError("gemini-cli 无输出")
+            raise LlmTransportError("gemini-cli 无输出")
 
         recap = parse_and_validate(raw, mode)
         return recap, LlmTokens()

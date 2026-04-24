@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from stock_recap.application.orchestration.budget import AgentBudget
 from stock_recap.config.settings import Settings
 from stock_recap.domain.models import Features, GenerateRequest, LlmTokens, MarketSnapshot, Recap
 from stock_recap.domain.run_context import RunContext
@@ -20,6 +21,8 @@ class RecapAgentRunState:
     defer_evolution_backtest: bool = False
     stream_pipeline_completed: bool = False
 
+    budget: Optional[AgentBudget] = None  # 由 application/recap.py 在入口处注入
+
     snapshot: Optional[MarketSnapshot] = None
     features: Optional[Features] = None
     memory: List[Dict[str, Any]] = field(default_factory=list)
@@ -35,5 +38,11 @@ class RecapAgentRunState:
     rendered_wechat_text: Optional[str] = None
     tokens: LlmTokens = field(default_factory=LlmTokens)
     llm_error: Optional[str] = None
+    budget_error: Optional[str] = None  # LlmBudgetExceeded 的 kind/limit/used，便于落库 & 报指标
+    critic_retries_used: int = 0  # Critic 重入实际触发次数（0 表示一次性通过/未触发）
     eval_result: Dict[str, Any] = field(default_factory=dict)
     push_result: Optional[bool] = None
+
+    def __post_init__(self) -> None:
+        if self.budget is None:
+            self.budget = AgentBudget.from_settings(self.settings)

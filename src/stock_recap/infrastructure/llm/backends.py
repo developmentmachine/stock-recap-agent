@@ -23,6 +23,7 @@ from stock_recap.domain.models import (
     LlmBackend,
     LlmError,
     LlmTokens,
+    LlmTransportError,
     MarketSnapshot,
     Mode,
     Recap,
@@ -62,9 +63,10 @@ __all__ = [
 
 
 @retry(
-    retry=retry_if_exception_type(LlmError),
+    retry=retry_if_exception_type(LlmTransportError),
     stop=stop_after_attempt(3),
     wait=wait_exponential_jitter(initial=1, max=12),
+    reraise=True,
 )
 def call_llm(
     settings: Settings,

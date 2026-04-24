@@ -225,4 +225,40 @@ class LlmTokens:
 
 
 class LlmError(RuntimeError):
-    pass
+    """所有 LLM 失败的祖先类（保持后向兼容；新代码请用更具体的子类）。"""
+
+
+class LlmTransportError(LlmError):
+    """**可重试**：网络抖动、subprocess 启动失败、HTTP 5xx、超时等传输/基础设施问题。
+
+    此类异常被 ``call_llm`` 的 tenacity 装饰器自动重试 N 次；超过 N 次后向上抛出。
+    """
+
+
+class LlmBusinessError(LlmError):
+    """**不可在同次调用内重试**：模型给出的内容本身有问题（schema、解析、约束）。
+
+    重新调一次大概率是相同结果——应交由 Critic 节点用结构化反馈再请求一次，
+    而不是 tenacity 盲重试浪费成本。
+    """
+
+
+class LlmParseError(LlmBusinessError):
+    """模型输出无法解析为 JSON。"""
+
+
+class LlmSchemaError(LlmBusinessError):
+    """模型输出 JSON 但未通过 Recap schema 校验。"""
+
+
+class LlmBudgetExceeded(LlmError):
+    """预算（工具调用次数 / 墙钟 / token）耗尽，立即中止。
+
+    既不应被 tenacity 重试，也不应触发 Critic（再来一轮预算只会更糟）。
+    """
+
+    def __init__(self, kind: str, limit: int, used: int) -> None:
+        super().__init__(f"budget exceeded: {kind} limit={limit} used={used}")
+        self.kind = kind
+        self.limit = limit
+        self.used = used

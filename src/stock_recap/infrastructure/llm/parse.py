@@ -5,7 +5,15 @@ import json
 import logging
 from typing import Any
 
-from stock_recap.domain.models import LlmError, Mode, Recap, RecapDaily, RecapStrategy
+from stock_recap.domain.models import (
+    LlmError,
+    LlmParseError,
+    LlmSchemaError,
+    Mode,
+    Recap,
+    RecapDaily,
+    RecapStrategy,
+)
 
 logger = logging.getLogger("stock_recap.infrastructure.llm.parse")
 
@@ -59,18 +67,23 @@ def parse_json_from_text(text: str) -> Any:
 
 
 def parse_and_validate(content: str, mode: Mode) -> Recap:
-    """将模型原始文本解析为 ``Recap``，失败统一抛 ``LlmError`` 以便 call_llm 重试。"""
+    """将模型原始文本解析为 ``Recap``。
+
+    解析失败 → ``LlmParseError``；schema 校验失败 → ``LlmSchemaError``。
+    二者都属于 ``LlmBusinessError``：tenacity 不再盲重试，Critic 节点会用结构化
+    反馈再调一次。
+    """
     try:
         payload = parse_json_from_text(content)
     except Exception as e:
         logger.warning(
             _stable_json({"event": "json_parse_failed", "error": str(e), "raw": content[:500]})
         )
-        raise LlmError("LLM 输出非 JSON/不可解析") from e
+        raise LlmParseError("LLM 输出非 JSON/不可解析") from e
     try:
         if mode == "daily":
             return RecapDaily.model_validate(payload)
         return RecapStrategy.model_validate(payload)
     except Exception as e:
         logger.warning(_stable_json({"event": "schema_validate_failed", "error": str(e)}))
-        raise LlmError("LLM 输出未通过 schema 校验") from e
+        raise LlmSchemaError(f"LLM 输出未通过 schema 校验: {e}") from e

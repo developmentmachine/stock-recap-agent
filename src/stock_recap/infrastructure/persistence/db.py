@@ -147,6 +147,59 @@ def init_db(db_path: str) -> None:
               active_version TEXT NOT NULL,
               updated_at TEXT NOT NULL
             );
+
+            /*
+             * pending_actions（outbox）：副作用任务的「事务化收件箱」。
+             * - 入库与业务写库共一个 SQLite 事务时，可避免「业务成功但副作用丢失」。
+             * - UNIQUE(request_id, action_type) 保证幂等：同一请求同类动作只会落库一次，
+             *   即使 generate 端被重试触发也不会引发多次推送/回测。
+             * - status: pending | running | done | failed
+             * - next_attempt_at: 指数退避后的下次可调度时间（ISO UTC，便于 ORDER BY 文本比较）
+             * - last_error: 失败原因（最后一次）
+             */
+            CREATE TABLE IF NOT EXISTS pending_actions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              request_id TEXT NOT NULL,
+              action_type TEXT NOT NULL,
+              payload_json TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending',
+              attempts INTEGER NOT NULL DEFAULT 0,
+              next_attempt_at TEXT NOT NULL,
+              last_error TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_actions_dedup
+              ON pending_actions(request_id, action_type);
+            CREATE INDEX IF NOT EXISTS idx_pending_actions_due
+              ON pending_actions(status, next_attempt_at);
+
+            /*
+             * push_log：单次推送的幂等账本。
+             * UNIQUE(request_id, channel) 防止同一请求被多次推送 ——
+             * 重试 / 调度重启 / 多 worker / outbox 兜底等任何场景下都安全。
+             *
+             * 状态机：
+             *   sent     —— 成功推送
+             *   skipped  —— 主动跳过（disabled/no-content）
+             *   failed   —— 推送失败（保留 last_error，重试时仍可命中幂等）
+             *
+             * 注：同一 request_id 失败后想强制重发，需要先 DELETE 这一行（人工介入）。
+             */
+            CREATE TABLE IF NOT EXISTS push_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              request_id TEXT NOT NULL,
+              channel TEXT NOT NULL,
+              status TEXT NOT NULL,
+              attempts INTEGER NOT NULL DEFAULT 1,
+              last_error TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_push_log_dedup
+              ON push_log(request_id, channel);
             """
         )
 
@@ -514,6 +567,163 @@ def set_active_prompt_version(db_path: str, version: str, *, updated_at: str) ->
               updated_at     = excluded.updated_at
             """,
             (version, updated_at),
+        )
+
+
+# ─── pending_actions（outbox） ────────────────────────────────────────────────
+
+def enqueue_pending_action(
+    db_path: str,
+    *,
+    request_id: str,
+    action_type: str,
+    payload_json: str,
+    now_iso: str,
+) -> bool:
+    """幂等入队：``UNIQUE(request_id, action_type)`` 已存在则返回 False。
+
+    返回值：``True`` 表示新插入，``False`` 表示已经存在（不视为错误）。
+    """
+    with get_conn(db_path) as conn:
+        try:
+            conn.execute(
+                """
+                INSERT INTO pending_actions
+                  (request_id, action_type, payload_json, status, attempts,
+                   next_attempt_at, last_error, created_at, updated_at)
+                VALUES (?,?,?, 'pending', 0, ?, NULL, ?, ?)
+                """,
+                (request_id, action_type, payload_json, now_iso, now_iso, now_iso),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def claim_due_pending_actions(
+    db_path: str,
+    *,
+    now_iso: str,
+    limit: int = 16,
+) -> List[Dict[str, Any]]:
+    """原子地把到期的 pending 行标记为 running 并返回；避免多 worker 重复消费。"""
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, request_id, action_type, payload_json, attempts
+            FROM pending_actions
+            WHERE status = 'pending' AND next_attempt_at <= ?
+            ORDER BY next_attempt_at ASC, id ASC
+            LIMIT ?
+            """,
+            (now_iso, int(limit)),
+        ).fetchall()
+        if not rows:
+            return []
+        ids = [int(r["id"]) for r in rows]
+        placeholders = ",".join("?" for _ in ids)
+        # 在同一事务里把它们抢占为 running，竞争 worker 不会重复抢到。
+        conn.execute(
+            f"UPDATE pending_actions SET status = 'running', updated_at = ? "
+            f"WHERE id IN ({placeholders}) AND status = 'pending'",
+            (now_iso, *ids),
+        )
+    return [dict(r) for r in rows]
+
+
+def mark_pending_action_done(db_path: str, *, action_id: int, now_iso: str) -> None:
+    with get_conn(db_path) as conn:
+        conn.execute(
+            "UPDATE pending_actions SET status = 'done', last_error = NULL, updated_at = ? "
+            "WHERE id = ?",
+            (now_iso, int(action_id)),
+        )
+
+
+def mark_pending_action_failed(
+    db_path: str,
+    *,
+    action_id: int,
+    now_iso: str,
+    next_attempt_at_iso: Optional[str],
+    last_error: str,
+    final: bool,
+) -> None:
+    """``next_attempt_at_iso=None`` 或 ``final=True`` → 状态停在 'failed'；否则回到 'pending'。"""
+    new_status = "failed" if final or not next_attempt_at_iso else "pending"
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE pending_actions
+            SET status = ?,
+                attempts = attempts + 1,
+                next_attempt_at = COALESCE(?, next_attempt_at),
+                last_error = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (new_status, next_attempt_at_iso, last_error, now_iso, int(action_id)),
+        )
+
+
+def list_pending_actions(
+    db_path: str,
+    *,
+    status: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """供运维接口/测试观察。"""
+    with get_conn(db_path) as conn:
+        if status is None:
+            rows = conn.execute(
+                "SELECT * FROM pending_actions ORDER BY id DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM pending_actions WHERE status = ? ORDER BY id DESC LIMIT ?",
+                (status, int(limit)),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ─── push_log（推送幂等账本） ────────────────────────────────────────────────
+
+
+def get_push_log(
+    db_path: str, *, request_id: str, channel: str
+) -> Optional[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM push_log WHERE request_id = ? AND channel = ?",
+            (request_id, channel),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_push_log(
+    db_path: str,
+    *,
+    request_id: str,
+    channel: str,
+    status: str,
+    now_iso: str,
+    last_error: Optional[str] = None,
+) -> None:
+    """``UNIQUE(request_id, channel)`` 已存在则更新 status/attempts/last_error。"""
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO push_log
+              (request_id, channel, status, attempts, last_error, created_at, updated_at)
+            VALUES (?,?,?, 1, ?, ?, ?)
+            ON CONFLICT(request_id, channel) DO UPDATE SET
+              status = excluded.status,
+              attempts = push_log.attempts + 1,
+              last_error = excluded.last_error,
+              updated_at = excluded.updated_at
+            """,
+            (request_id, channel, status, last_error, now_iso, now_iso),
         )
 
 

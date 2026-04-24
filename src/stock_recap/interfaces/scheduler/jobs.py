@@ -18,8 +18,11 @@ from typing import Any, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from stock_recap.application.recap import generate_once, _try_run_backtest
+from stock_recap.application.side_effects import deferred as _deferred  # noqa: F401  注册 outbox handler
+from stock_recap.application.side_effects import outbox
 from stock_recap.infrastructure.data.calendar import is_trading_day
 from stock_recap.infrastructure.persistence.db import init_db
 from stock_recap.domain.models import GenerateRequest
@@ -103,6 +106,30 @@ def _run_backtest(settings: Settings) -> None:
         logger.error(_stable_json({"event": "scheduler_error", "job": "backtest", "error": str(e)}))
 
 
+def _run_outbox_sweep(settings: Settings) -> None:
+    """周期 sweep outbox：兜底 ``BackgroundTasks`` 没消费成功的任务。
+
+    与交易日无关 —— 失败重试可能跨日（比如夜里崩溃，第二天早上才被处理）。
+    单次最多处理 32 条；正常负载下完全够用，且不会让一次 sweep 拖太久。
+    """
+    try:
+        summary = outbox.process_due(settings.db_path, batch=32)
+        if summary.claimed:
+            logger.info(
+                _stable_json(
+                    {
+                        "event": "scheduler_outbox_sweep",
+                        "claimed": summary.claimed,
+                        "done": summary.done,
+                        "failed_retry": summary.failed_retry,
+                        "failed_final": summary.failed_final,
+                    }
+                )
+            )
+    except Exception as e:
+        logger.error(_stable_json({"event": "scheduler_error", "job": "outbox", "error": str(e)}))
+
+
 def _write_output(
     output_dir: str,
     date: str,
@@ -165,6 +192,18 @@ def start_scheduler(settings: Settings) -> Any:
         replace_existing=True,
     )
 
+    # outbox sweep：每分钟兜底一次 pending_actions（指数退避到期任务）。
+    # coalesce=True 避免堆积；max_instances=1 保证同一时刻至多一个 sweep 在跑。
+    scheduler.add_job(
+        _run_outbox_sweep,
+        IntervalTrigger(seconds=max(15, int(settings.outbox_sweep_interval_seconds))),
+        id="outbox_sweep",
+        args=[settings],
+        coalesce=True,
+        max_instances=1,
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(
         _stable_json(
@@ -173,6 +212,7 @@ def start_scheduler(settings: Settings) -> Any:
                 "daily_recap": f"{settings.scheduler_daily_hour}:{settings.scheduler_daily_minute:02d}",
                 "strategy": f"{settings.scheduler_daily_hour}:{settings.scheduler_strategy_minute:02d}",
                 "backtest": f"{settings.scheduler_daily_hour}:{settings.scheduler_backtest_minute:02d}",
+                "outbox_sweep_seconds": int(settings.outbox_sweep_interval_seconds),
             }
         )
     )

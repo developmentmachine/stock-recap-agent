@@ -19,7 +19,7 @@ from stock_recap.application.side_effects import run_deferred_post_recap, try_ru
 from stock_recap.config.settings import Settings
 from stock_recap.domain.models import GenerateRequest, GenerateResponse
 from stock_recap.domain.run_context import RunContext
-from stock_recap.observability.runtime_context import current_run_context
+from stock_recap.observability.runtime_context import current_budget, current_run_context
 from stock_recap.observability.tracing import configure_tracing, get_tracer
 from stock_recap.policy.guardrails import validate_generate_request
 
@@ -47,6 +47,15 @@ def generate_once(
     ctx_token = current_run_context.set(run_ctx)
     tracer = get_tracer(__name__)
 
+    state = RecapAgentRunState(
+        request=req,
+        settings=settings,
+        run_ctx=run_ctx,
+        t0=t0,
+        defer_evolution_backtest=defer_evolution_backtest,
+    )
+    budget_token = current_budget.set(state.budget)
+
     try:
         with tracer.start_as_current_span(
             "recap.generate",
@@ -61,15 +70,9 @@ def generate_once(
                 span = trace.get_current_span()
                 span.set_attribute("recap.session_id", run_ctx.session_id)
 
-            state = RecapAgentRunState(
-                request=req,
-                settings=settings,
-                run_ctx=run_ctx,
-                t0=t0,
-                defer_evolution_backtest=defer_evolution_backtest,
-            )
             return execute_recap_pipeline(state)
     finally:
+        current_budget.reset(budget_token)
         current_run_context.reset(ctx_token)
 
 
@@ -101,7 +104,15 @@ def iter_generate_ndjson(
         t0=t0,
         defer_evolution_backtest=defer_evolution_backtest,
     )
-    yield from iter_recap_agent_ndjson(state)
+    # 流式路径下，生成器可能跨线程恢复，``ContextVar.reset(token)`` 会抛
+    # ``ValueError: Token was created in a different Context``；改用「保存→写回」
+    # 模式（``set`` 不需要 Token，跨上下文也不会抛）。
+    prev_budget = current_budget.get()
+    current_budget.set(state.budget)
+    try:
+        yield from iter_recap_agent_ndjson(state)
+    finally:
+        current_budget.set(prev_budget)
     if (
         defer_evolution_backtest
         and state.stream_pipeline_completed

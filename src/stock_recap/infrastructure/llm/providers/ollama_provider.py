@@ -8,8 +8,9 @@ from typing import Any, Dict, List, Tuple
 import httpx
 
 from stock_recap.config.settings import Settings
-from stock_recap.domain.models import LlmError, LlmTokens, Mode, Recap
+from stock_recap.domain.models import LlmError, LlmTokens, LlmTransportError, Mode, Recap
 from stock_recap.infrastructure.llm.parse import _stable_json, parse_and_validate
+from stock_recap.observability.runtime_context import current_budget
 
 logger = logging.getLogger("stock_recap.infrastructure.llm.providers.ollama")
 
@@ -102,13 +103,18 @@ class OllamaProvider:
                 data = r.json()
         except Exception as e:
             logger.warning(_stable_json({"event": "ollama_call_failed", "error": str(e)}))
-            raise LlmError(str(e)) from e
+            raise LlmTransportError(str(e)) from e
 
         content = (data.get("message") or {}).get("content") or ""
+        delta_in = data.get("prompt_eval_count") or 0
+        delta_out = data.get("eval_count") or 0
         merged = LlmTokens(
-            input_tokens=(tokens.input_tokens or 0) + (data.get("prompt_eval_count") or 0),
-            output_tokens=(tokens.output_tokens or 0) + (data.get("eval_count") or 0),
+            input_tokens=(tokens.input_tokens or 0) + delta_in,
+            output_tokens=(tokens.output_tokens or 0) + delta_out,
         )
         merged.total_tokens = (merged.input_tokens or 0) + (merged.output_tokens or 0)
+        budget = current_budget.get()
+        if budget is not None:
+            budget.record_tokens(delta_in + delta_out)
         recap = parse_and_validate(content, mode)
         return recap, merged
