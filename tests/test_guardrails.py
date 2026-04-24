@@ -51,7 +51,23 @@ def test_coerce_recap_output_fills_empty_disclaimer_daily():
     assert "投资有风险" in (out.disclaimer or "")
 
 
-def test_coerce_recap_output_keeps_nonempty_disclaimer():
+def test_coerce_recap_output_keeps_compliant_disclaimer():
+    """已包含必含词（"仅供参考" / "不构成投资建议"）的自定义 disclaimer 不被改写。"""
+    r = RecapStrategy(
+        mode="strategy",
+        date="2024-01-02",
+        mainline_focus=["a"],
+        risk_warnings=["b"],
+        trading_logic=["1", "2"],
+        disclaimer="本文仅供参考，请独立判断。",
+    )
+    out = coerce_recap_output(r)
+    assert out is not None
+    assert out.disclaimer == "本文仅供参考，请独立判断。"
+
+
+def test_coerce_recap_output_overrides_noncompliant_disclaimer():
+    """不含必含词的自定义 disclaimer 被 require_phrases(fix=true) 覆盖回默认。"""
     r = RecapStrategy(
         mode="strategy",
         date="2024-01-02",
@@ -62,4 +78,4 @@ def test_coerce_recap_output_keeps_nonempty_disclaimer():
     )
     out = coerce_recap_output(r)
     assert out is not None
-    assert out.disclaimer == "自定义免责"
+    assert "仅供参考" in out.disclaimer or "不构成投资建议" in out.disclaimer

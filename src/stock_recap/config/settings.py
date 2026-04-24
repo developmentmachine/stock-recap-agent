@@ -121,6 +121,21 @@ class Settings(BaseSettings):
     tools_market_data: bool = Field(default=True, alias="RECAP_TOOLS_MARKET_DATA")
     tools_history: bool = Field(default=True, alias="RECAP_TOOLS_HISTORY")
 
+    # 工具治理（per-tool policy / 审计）
+    tool_audit_enabled: bool = Field(
+        default=True,
+        alias="RECAP_TOOL_AUDIT_ENABLED",
+        description="是否将每次工具调用（成功/失败/拒绝/超时）落库 tool_invocations 表",
+    )
+    principal_role: str = Field(
+        default="user",
+        alias="RECAP_PRINCIPAL_ROLE",
+        description=(
+            "当前进程默认 principal 角色（guest|user|operator|admin），"
+            "用于 ToolPolicy.required_role 的 RBAC 校验；Wave 5 接入 PrincipalContext 后将被请求级 ctx 覆盖。"
+        ),
+    )
+
     # Agent 单次运行预算（超限抛 LlmBudgetExceeded，立即中止；不会被 tenacity 重试）
     agent_max_tool_calls: int = Field(
         default=8,

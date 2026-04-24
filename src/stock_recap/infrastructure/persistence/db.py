@@ -200,6 +200,31 @@ def init_db(db_path: str) -> None:
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_push_log_dedup
               ON push_log(request_id, channel);
+
+            /*
+             * tool_invocations：工具调用审计明细。
+             * - 每次工具调用（成功 / 失败 / 拒绝）落一行；不依赖业务主表，可独立查询；
+             * - 与 recap_runs 通过 request_id 关联，便于 join 出「这次复盘到底用了哪些工具」；
+             * - status: ok | failed | denied | timeout
+             * - principal_role 留作 Wave 5 多租户接入预留字段。
+             */
+            CREATE TABLE IF NOT EXISTS tool_invocations (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              request_id TEXT,
+              tool_name TEXT NOT NULL,
+              status TEXT NOT NULL,
+              read_only INTEGER NOT NULL DEFAULT 1,
+              principal_role TEXT,
+              arguments_json TEXT,
+              latency_ms INTEGER,
+              error TEXT,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tool_inv_request_id
+              ON tool_invocations(request_id);
+            CREATE INDEX IF NOT EXISTS idx_tool_inv_tool_status
+              ON tool_invocations(tool_name, status);
             """
         )
 
@@ -725,6 +750,72 @@ def upsert_push_log(
             """,
             (request_id, channel, status, last_error, now_iso, now_iso),
         )
+
+
+# ─── tool_invocations（工具审计） ────────────────────────────────────────────
+
+
+def insert_tool_invocation(
+    db_path: str,
+    *,
+    request_id: Optional[str],
+    tool_name: str,
+    status: str,
+    read_only: bool,
+    principal_role: Optional[str],
+    arguments: Optional[Dict[str, Any]],
+    latency_ms: Optional[int],
+    error: Optional[str],
+    created_at: str,
+) -> None:
+    """单次工具调用落库；任何异常向上抛由调用方决定是否吞掉。"""
+    args_json = _stable_json(arguments) if arguments is not None else None
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO tool_invocations
+              (request_id, tool_name, status, read_only, principal_role,
+               arguments_json, latency_ms, error, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                request_id,
+                tool_name,
+                status,
+                1 if read_only else 0,
+                principal_role,
+                args_json,
+                latency_ms,
+                error,
+                created_at,
+            ),
+        )
+
+
+def load_recent_tool_invocations(
+    db_path: str,
+    *,
+    request_id: Optional[str] = None,
+    tool_name: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """运维 / 测试用：按 request_id 或 tool_name 过滤的近期审计记录。"""
+    where: List[str] = []
+    params: List[Any] = []
+    if request_id is not None:
+        where.append("request_id = ?")
+        params.append(request_id)
+    if tool_name is not None:
+        where.append("tool_name = ?")
+        params.append(tool_name)
+    sql = "SELECT * FROM tool_invocations"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(int(limit))
+    with get_conn(db_path) as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ─── 指标查询 ──────────────────────────────────────────────────────────────────

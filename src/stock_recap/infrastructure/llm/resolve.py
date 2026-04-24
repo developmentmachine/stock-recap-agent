@@ -1,7 +1,8 @@
 """Backend / 模型名解析。
 
-``LlmBackend`` 是一个受控字面量，但本模块对外接受**字符串**以允许别名
-（例如 ``cursor-agent`` → ``cursor-cli``）。新增 provider 时在此补充前缀。
+历史上 ``_BACKEND_ALIAS`` 是手动维护的 dict；Wave 3 改为从
+``domain.registries.LlmBackendRegistry`` 派生 —— 新增 backend 只需在
+``LlmBackendSpec.aliases`` 上声明即可被这里识别。
 """
 from __future__ import annotations
 
@@ -9,23 +10,12 @@ from typing import Optional, Tuple
 
 from stock_recap.config.settings import Settings
 from stock_recap.domain.models import LlmBackend
-
-_BACKEND_ALIAS = {
-    "openai": "openai",
-    "ollama": "ollama",
-    "cursor": "cursor-cli",
-    "cursor-cli": "cursor-cli",
-    "cursor-agent": "cursor-cli",
-    "agent": "cursor-cli",
-    "gemini": "gemini-cli",
-    "gemini-cli": "gemini-cli",
-}
+from stock_recap.domain.registries import default_backend_registry
 
 
 def _model_prefix_to_backend(prefix: str) -> Optional[LlmBackend]:
-    p = prefix.strip().lower()
-    resolved = _BACKEND_ALIAS.get(p)
-    return resolved  # type: ignore[return-value]
+    """``cursor`` / ``cursor-agent`` / ``CURSOR-CLI`` 都归一到 canonical name。"""
+    return default_backend_registry().resolve_alias(prefix)  # type: ignore[return-value]
 
 
 def _interpret_model_spec(model_spec: str) -> Tuple[Optional[LlmBackend], Optional[str]]:

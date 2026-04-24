@@ -68,12 +68,26 @@ def _tool_loop(
         messages.append(
             msg.model_dump() if hasattr(msg, "model_dump") else {"role": "assistant", "content": msg.content}
         )
+        from stock_recap.policy.tools import ToolPolicyError
+
         for tc in tool_calls:
             try:
                 args = json.loads(tc.function.arguments)
             except Exception:
                 args = {}
-            result = runner.execute(tc.function.name, args, db_path)
+            try:
+                result = runner.execute(tc.function.name, args, db_path)
+            except ToolPolicyError as e:
+                # 策略拒绝（disabled / forbidden / per-tool budget / timeout）
+                # 反馈给 LLM 单条「tool 失败」结果，让它根据 schema 选择别的工具
+                # 或直接给最终答案；但不能让整次 LLM 循环崩。
+                # 全局 LlmBudgetExceeded 不属于 ToolPolicyError，会向上抛由 pipeline 接住。
+                result = f"[TOOL DENIED: {type(e).__name__}] {e}"
+                logger.info(
+                    _stable_json(
+                        {"event": "tool_denied", "tool": tc.function.name, "reason": str(e)[:200]}
+                    )
+                )
             logger.info(
                 _stable_json({"event": "tool_result", "tool": tc.function.name, "len": len(result)})
             )

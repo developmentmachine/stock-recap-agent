@@ -14,6 +14,7 @@ from stock_recap.domain.models import (
     RecapDaily,
     RecapStrategy,
 )
+from stock_recap.domain.registries import ModeRegistry, default_mode_registry
 
 logger = logging.getLogger("stock_recap.infrastructure.llm.parse")
 
@@ -66,12 +67,19 @@ def parse_json_from_text(text: str) -> Any:
         raise
 
 
-def parse_and_validate(content: str, mode: Mode) -> Recap:
+def parse_and_validate(
+    content: str,
+    mode: Mode,
+    mode_registry: ModeRegistry | None = None,
+) -> Recap:
     """将模型原始文本解析为 ``Recap``。
 
     解析失败 → ``LlmParseError``；schema 校验失败 → ``LlmSchemaError``。
     二者都属于 ``LlmBusinessError``：tenacity 不再盲重试，Critic 节点会用结构化
     反馈再调一次。
+
+    ``mode_registry`` 不传时走进程默认注册表，新增 mode 时只在注册表里加 spec
+    即可，本函数无需改动。
     """
     try:
         payload = parse_json_from_text(content)
@@ -80,10 +88,13 @@ def parse_and_validate(content: str, mode: Mode) -> Recap:
             _stable_json({"event": "json_parse_failed", "error": str(e), "raw": content[:500]})
         )
         raise LlmParseError("LLM 输出非 JSON/不可解析") from e
+    reg = mode_registry or default_mode_registry()
+    spec = reg.get(mode)
+    if spec is None:
+        # 未注册 mode 视为 schema 错（business error），上层 critic 不会重入未知 mode。
+        raise LlmSchemaError(f"unknown mode '{mode}', not registered in ModeRegistry")
     try:
-        if mode == "daily":
-            return RecapDaily.model_validate(payload)
-        return RecapStrategy.model_validate(payload)
+        return spec.recap_class.model_validate(payload)  # type: ignore[no-any-return]
     except Exception as e:
         logger.warning(_stable_json({"event": "schema_validate_failed", "error": str(e)}))
         raise LlmSchemaError(f"LLM 输出未通过 schema 校验: {e}") from e

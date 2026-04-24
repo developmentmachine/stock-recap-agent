@@ -1,14 +1,19 @@
 """LlmProvider 注册表 + call_llm 路由 behavior。"""
 from typing import Dict, List, Tuple
-from unittest.mock import patch
 
 import pytest
 
 from stock_recap.config.settings import Settings
 from stock_recap.domain.models import LlmError, LlmTokens, RecapDaily, RecapDailySection
+from stock_recap.domain.registries import (
+    LlmBackendSpec,
+    default_backend_registry,
+    reset_default_backend_registry,
+)
 from stock_recap.infrastructure.llm.backends import call_llm
 from stock_recap.infrastructure.llm.providers import (
     available_backends,
+    default_provider_registry,
     register_provider,
     resolve_provider,
 )
@@ -68,11 +73,20 @@ def test_resolve_provider_unknown_raises():
 
 
 def test_register_custom_provider_routes_through_call_llm(monkeypatch):
+    """新增 backend 的两步：先在 LlmBackendRegistry 登记 spec，再注册 provider。"""
+    # Step 1: 登记 backend 元描述（否则 ProviderRegistry.register 会拒绝）。
+    default_backend_registry().register(
+        LlmBackendSpec(
+            name="fake",
+            display_name="测试用 Fake",
+            requires_api_key_env=None,
+            supports_function_calling=False,
+            aliases=(),
+        )
+    )
     fake = _FakeProvider()
     register_provider("fake", fake)
     try:
-        # 强制走 "fake" backend（通过 model_spec 前缀路由需要 _model_prefix_to_backend
-        # 识别它；这里直接 patch llm_backend_effective）
         import stock_recap.infrastructure.llm.backends as be
 
         monkeypatch.setattr(be, "llm_backend_effective", lambda *a, **kw: "fake")
@@ -85,8 +99,8 @@ def test_register_custom_provider_routes_through_call_llm(monkeypatch):
         assert len(fake.calls) == 1
         assert fake.calls[0][1] == "test-model"
     finally:
-        # 测试完成后恢复注册表（避免影响其他测试）
-        from stock_recap.infrastructure.llm.providers import _REGISTRY, _BUILTIN
+        # 重置两侧默认注册表 → 下次取用都会重建为内置。
+        reset_default_backend_registry()
+        from stock_recap.infrastructure.llm import providers as providers_mod
 
-        _REGISTRY.clear()
-        _REGISTRY.update(_BUILTIN)
+        providers_mod._DEFAULT_REGISTRY = None

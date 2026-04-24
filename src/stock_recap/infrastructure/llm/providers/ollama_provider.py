@@ -56,6 +56,8 @@ def _tool_loop(
         messages.append(
             {"role": "assistant", "content": msg.get("content", ""), "tool_calls": tool_calls}
         )
+        from stock_recap.policy.tools import ToolPolicyError
+
         for tc in tool_calls:
             fn = tc.get("function") or {}
             args = fn.get("arguments") or {}
@@ -64,7 +66,11 @@ def _tool_loop(
                     args = json.loads(args)
                 except Exception:
                     args = {}
-            result = runner.execute(fn.get("name", ""), args, db_path)
+            try:
+                result = runner.execute(fn.get("name", ""), args, db_path)
+            except ToolPolicyError as e:
+                # 同 openai_provider：策略拒绝转 tool message，避免整次循环崩。
+                result = f"[TOOL DENIED: {type(e).__name__}] {e}"
             messages.append({"role": "tool", "content": result})
 
     return messages, tokens

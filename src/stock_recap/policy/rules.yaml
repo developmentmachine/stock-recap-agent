@@ -1,0 +1,57 @@
+version: 1
+
+# 输出侧默认 disclaimer：缺失或为空时回填到 recap.disclaimer。
+# 与 RecapDaily / RecapStrategy 字段默认保持一致；外置在这里方便运营单独迭代。
+disclaimer: "本内容仅供参考，不构成投资建议。投资有风险，入市需谨慎。"
+
+# 禁用词表：在 recap 的所有字符串字段（含嵌套 list）中按顺序匹配；命中即按
+# action 处理。
+#   - action=redact：用 replacement 替换匹配段（默认 "[已脱敏]"）
+#   - action=warn  ：仅记录 violation，不修改文本
+# regex=true 时 pattern 走 re；否则按字面包含匹配。
+forbidden_phrases:
+  - id: guarantee_return
+    pattern: "保证收益"
+    action: redact
+    severity: high
+  - id: sure_win
+    pattern: "稳赚不赔"
+    action: redact
+    severity: high
+  - id: insider_info
+    pattern: "内幕消息|内部消息"
+    regex: true
+    action: redact
+    severity: high
+  - id: must_rise_or_fall
+    pattern: "必涨|必跌|一定涨|一定跌"
+    regex: true
+    action: redact
+    replacement: "[已移除：避免必然性表述]"
+    severity: high
+  - id: recommend_buy
+    # 防止生成「建议买入 XXX」之类直接荐股表述；命中后弱化措辞。
+    pattern: "建议(?:买入|卖出|加仓|清仓)"
+    regex: true
+    action: redact
+    replacement: "[已脱敏：避免直接荐股]"
+    severity: high
+
+# 必含词：指定字段必须包含某些 token；缺一个就 violation（同时 fix=true 时
+# 会用 disclaimer 模板兜底覆盖）。
+require_phrases:
+  - id: disclaimer_must_have_keywords
+    field: disclaimer
+    must_contain_any:
+      - "仅供参考"
+      - "不构成投资建议"
+    fix: true   # 缺失时直接覆盖为默认 disclaimer
+    severity: medium
+
+# 一致性检查：跨字段语义校验。当前内置的 kind：
+#   - date_in_section_titles：daily 模式下，section.title 出现 YYYY-MM-DD/年月日
+#     时必须与 recap.date 一致
+consistency_checks:
+  - id: section_title_date_match
+    kind: date_in_section_titles
+    severity: medium

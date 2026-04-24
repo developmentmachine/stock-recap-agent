@@ -1,10 +1,20 @@
-"""生成与反馈 API 的输入护栏（防异常 payload、过长文本）。"""
+"""生成与反馈 API 的输入护栏（防异常 payload、过长文本） + 输出脱敏。
+
+输出脱敏（``coerce_recap_output``）走 ``policy.output_rules`` 的表驱动
+``RuleSet``：词表 / 必含词 / 一致性三类规则全部从 ``policy/rules.yaml`` 加载，
+运营 / 风控可单独迭代规则文件，无需触碰 Python 代码。
+"""
 from __future__ import annotations
 
+import json
+import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from stock_recap.domain.models import FeedbackRequest, GenerateRequest, Recap
+from stock_recap.policy.output_rules import RuleSet, Violation, apply_rules, load_ruleset
+
+logger = logging.getLogger("stock_recap.policy.guardrails")
 
 _DEFAULT_RECAP_DISCLAIMER = (
     "本内容仅供参考，不构成投资建议。投资有风险，入市需谨慎。"
@@ -14,6 +24,8 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _MAX_COMMENT = 8000
 _MAX_TAGS = 32
 _MAX_TAG_LEN = 64
+
+_DEFAULT_RULESET: Optional[RuleSet] = None
 
 
 class GuardrailError(ValueError):
@@ -61,11 +73,72 @@ def clamp_llm_messages(messages: List[Dict[str, Any]], max_total_chars: int = 1_
     return out
 
 
-def coerce_recap_output(recap: Recap | None) -> Recap | None:
-    """输出侧护栏：免责声明为空时回填默认文案（与 schema 默认一致）。"""
+def _get_default_ruleset() -> RuleSet:
+    """进程级懒加载缓存 —— 避免每次 generate 都重读 yaml。"""
+    global _DEFAULT_RULESET
+    if _DEFAULT_RULESET is None:
+        _DEFAULT_RULESET = load_ruleset()
+    return _DEFAULT_RULESET
+
+
+def reset_default_ruleset_cache() -> None:
+    """供 SIGHUP / 测试用：清除内存缓存，下次取用会重新读 yaml。"""
+    global _DEFAULT_RULESET
+    _DEFAULT_RULESET = None
+
+
+def coerce_recap_output(
+    recap: Recap | None,
+    ruleset: Optional[RuleSet] = None,
+) -> Recap | None:
+    """输出侧护栏：跑表驱动 ``RuleSet`` 做词表脱敏 + 必含词 + 一致性，并回填默认 disclaimer。
+
+    - 任何脱敏命中只 warning 落日志（``violations`` 列表用 stable JSON），由调用方决定是否
+      进一步透传给 critic 或落 audit；
+    - ``ruleset`` 不传时走 ``policy/rules.yaml`` 默认；
+    - 失败安全：若 RuleSet 应用过程中抛异常，仍按老逻辑兜底回填 disclaimer，不让护栏自身
+      把响应弄崩。
+    """
     if recap is None:
         return None
-    d = (getattr(recap, "disclaimer", None) or "").strip()
+    rs = ruleset or _get_default_ruleset()
+    try:
+        out, violations = apply_rules(recap, rs)
+    except Exception as e:
+        logger.warning(
+            json.dumps(
+                {"event": "output_rules_apply_failed", "error": str(e)},
+                ensure_ascii=False,
+            )
+        )
+        out = recap
+        violations = []
+
+    if violations:
+        logger.warning(
+            json.dumps(
+                {
+                    "event": "recap_output_violations",
+                    "count": len(violations),
+                    "violations": [
+                        {
+                            "rule_id": v.rule_id,
+                            "severity": v.severity,
+                            "field_path": v.field_path,
+                            "redacted": v.redacted,
+                            "detail": v.detail,
+                        }
+                        for v in violations
+                    ],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+
+    if out is None:
+        return None
+    d = (getattr(out, "disclaimer", None) or "").strip()
     if d:
-        return recap
-    return recap.model_copy(update={"disclaimer": _DEFAULT_RECAP_DISCLAIMER})
+        return out
+    return out.model_copy(update={"disclaimer": rs.disclaimer or _DEFAULT_RECAP_DISCLAIMER})
