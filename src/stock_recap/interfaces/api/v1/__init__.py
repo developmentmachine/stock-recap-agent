@@ -6,5 +6,6 @@
 from stock_recap.interfaces.api.v1.ops import router as ops_router
 from stock_recap.interfaces.api.v1.recap import router as recap_router
 from stock_recap.interfaces.api.v1.feedback import router as feedback_router
+from stock_recap.interfaces.api.v1.jobs import router as jobs_router
 
-__all__ = ["ops_router", "recap_router", "feedback_router"]
+__all__ = ["ops_router", "recap_router", "feedback_router", "jobs_router"]

@@ -48,6 +48,35 @@ def _stable_json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _resolve_principal_role(settings: Settings) -> str:
+    """优先使用请求维度的 ``current_principal.role``，否则回落到全局 ``Settings.principal_role``。"""
+    try:
+        from stock_recap.domain.principal import get_principal
+
+        role = (get_principal().role or "").strip()
+        if role:
+            return role
+    except Exception:
+        pass
+    return settings.principal_role
+
+
+def _resolve_tenant_id() -> Optional[str]:
+    """优先取 ``current_principal.tenant_id``，再回落到 ``current_run_context.tenant_id``。"""
+    try:
+        from stock_recap.domain.principal import get_principal
+
+        tid = get_principal().tenant_id
+        if tid:
+            return tid
+    except Exception:
+        pass
+    ctx = current_run_context.get()
+    if ctx is not None:
+        return getattr(ctx, "tenant_id", None)
+    return None
+
+
 # 与 Settings 字段名的映射；新增工具时这里也要登记一份，否则 enabled_tool_names
 # 不会把它放进允许集合（与历史行为兼容）。
 _SETTINGS_TOOL_FLAGS: Dict[str, str] = {
@@ -103,7 +132,7 @@ class RecapToolRunner:
         if not self._settings.tools_enabled:
             return set()
         names: Set[str] = set()
-        principal = self._settings.principal_role
+        principal = _resolve_principal_role(self._settings)
         for name in self._policy_registry.names():
             if not self._settings_flag_on(name):
                 continue
@@ -134,7 +163,8 @@ class RecapToolRunner:
         - 全局 ``LlmBudgetExceeded``（来自 ``current_budget``）继续向上抛，由
           pipeline 阶段切换处接住、终止整次 run。
         """
-        principal = self._settings.principal_role
+        principal = _resolve_principal_role(self._settings)
+        tenant_id = _resolve_tenant_id()
         ctx = current_run_context.get()
         request_id = ctx.request_id if ctx is not None else None
 
@@ -148,6 +178,7 @@ class RecapToolRunner:
                 status="denied",
                 read_only=True,
                 principal_role=principal,
+                tenant_id=tenant_id,
                 arguments=arguments,
                 latency_ms=0,
                 error=str(e),
@@ -163,6 +194,7 @@ class RecapToolRunner:
                 status="denied",
                 read_only=policy.read_only,
                 principal_role=principal,
+                tenant_id=tenant_id,
                 arguments=arguments,
                 latency_ms=0,
                 error=str(err),
@@ -181,6 +213,7 @@ class RecapToolRunner:
                 status="denied",
                 read_only=policy.read_only,
                 principal_role=principal,
+                tenant_id=tenant_id,
                 arguments=arguments,
                 latency_ms=0,
                 error=str(err),
@@ -198,6 +231,7 @@ class RecapToolRunner:
                     status="denied",
                     read_only=policy.read_only,
                     principal_role=principal,
+                tenant_id=tenant_id,
                     arguments=arguments,
                     latency_ms=0,
                     error=str(err),
@@ -216,6 +250,7 @@ class RecapToolRunner:
                     status="denied",
                     read_only=policy.read_only,
                     principal_role=principal,
+                tenant_id=tenant_id,
                     arguments=arguments,
                     latency_ms=0,
                     error=f"agent_budget: {e}",
@@ -234,6 +269,7 @@ class RecapToolRunner:
                 status="timeout",
                 read_only=policy.read_only,
                 principal_role=principal,
+                tenant_id=tenant_id,
                 arguments=arguments,
                 latency_ms=int((time.monotonic() - t0) * 1000),
                 error=str(e),
@@ -246,6 +282,7 @@ class RecapToolRunner:
                 status="failed",
                 read_only=policy.read_only,
                 principal_role=principal,
+                tenant_id=tenant_id,
                 arguments=arguments,
                 latency_ms=int((time.monotonic() - t0) * 1000),
                 error=str(e)[:500],
@@ -294,7 +331,8 @@ class RecapToolRunner:
         if not allowed:
             return ""
 
-        principal = self._settings.principal_role
+        principal = _resolve_principal_role(self._settings)
+        tenant_id = _resolve_tenant_id()
         ctx = current_run_context.get()
         request_id = ctx.request_id if ctx is not None else None
         budget = current_budget.get()
@@ -315,6 +353,7 @@ class RecapToolRunner:
                         status="denied",
                         read_only=policy.read_only,
                         principal_role=principal,
+                tenant_id=tenant_id,
                         arguments={"phase": "prefetch", "date": date},
                         latency_ms=0,
                         error=f"per_tool_budget: limit={policy.max_calls_per_run}",
@@ -339,6 +378,7 @@ class RecapToolRunner:
                     status="failed",
                     read_only=True,
                     principal_role=principal,
+                tenant_id=tenant_id,
                     arguments={"phase": "prefetch", "date": date},
                     latency_ms=int((time.monotonic() - t0) * 1000),
                     error=str(e)[:500],
@@ -354,6 +394,7 @@ class RecapToolRunner:
                 status="ok",
                 read_only=True,
                 principal_role=principal,
+                tenant_id=tenant_id,
                 arguments={"phase": "prefetch", "date": date},
                 latency_ms=elapsed_each,
                 error=None,
@@ -373,8 +414,16 @@ class RecapToolRunner:
         arguments: Optional[Dict[str, Any]],
         latency_ms: Optional[int],
         error: Optional[str],
+        tenant_id: Optional[str] = None,
     ) -> None:
-        """所有审计写入失败一律降级为 warning，不影响主调用链路。"""
+        """所有审计写入失败一律降级为 warning，不影响主调用链路。
+
+        无论 audit 落库成功与否，``tool_invocations_total`` 计数都会更新；
+        Prometheus 视角的「调用了多少次工具」不应该被 SQLite 故障掩盖。
+        """
+        from stock_recap.observability.metrics import record_tool_invocation
+
+        record_tool_invocation(tool_name, status)
         if not self._settings.tool_audit_enabled:
             return
         try:
@@ -391,6 +440,7 @@ class RecapToolRunner:
                 latency_ms=latency_ms,
                 error=error,
                 created_at=_utc_now_iso(),
+                tenant_id=tenant_id,
             )
         except Exception as e:
             logger.warning(

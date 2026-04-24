@@ -24,6 +24,16 @@ from stock_recap.observability.tracing import configure_tracing, get_tracer
 from stock_recap.policy.guardrails import validate_generate_request
 
 
+def _current_tenant_id() -> Optional[str]:
+    """从 ``current_principal`` 取 tenant_id；CLI / 内部调用没有 principal 时返回 None。"""
+    try:
+        from stock_recap.domain.principal import get_principal
+
+        return get_principal().tenant_id
+    except Exception:
+        return None
+
+
 def generate_once(
     req: GenerateRequest,
     settings: Settings,
@@ -41,7 +51,11 @@ def generate_once(
     configure_tracing(settings)
     validate_generate_request(req)
 
-    run_ctx = ctx or RunContext.new()
+    run_ctx = (ctx or RunContext.new()).with_overrides(
+        mode=req.mode,
+        provider=str(req.provider),
+        tenant_id=_current_tenant_id(),
+    )
     request_id = run_ctx.request_id
     t0 = time.time()
     ctx_token = current_run_context.set(run_ctx)
@@ -93,9 +107,17 @@ def iter_generate_ndjson(
     configure_tracing(settings)
     validate_generate_request(req)
 
-    run_ctx = ctx or RunContext.new()
+    run_ctx = (ctx or RunContext.new()).with_overrides(
+        mode=req.mode,
+        provider=str(req.provider),
+        tenant_id=_current_tenant_id(),
+    )
     request_id = run_ctx.request_id
     t0 = time.time()
+    # 在 stream 路径上同样把 RunContext 写到 ContextVar，确保各 phase 内日志能拿到 ctx。
+    # 用 set/restore 模式避免跨线程 reset(token) 抛 ValueError。
+    prev_ctx = current_run_context.get()
+    current_run_context.set(run_ctx)
 
     state = RecapAgentRunState(
         request=req,
@@ -113,6 +135,7 @@ def iter_generate_ndjson(
         yield from iter_recap_agent_ndjson(state)
     finally:
         current_budget.set(prev_budget)
+        current_run_context.set(prev_ctx)
     if (
         defer_evolution_backtest
         and state.stream_pipeline_completed

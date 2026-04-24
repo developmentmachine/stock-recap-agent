@@ -21,6 +21,8 @@ from stock_recap.config.settings import Settings
 from stock_recap.domain.models import (
     Features,
     LlmBackend,
+    LlmBudgetExceeded,
+    LlmBusinessError,
     LlmError,
     LlmTokens,
     LlmTransportError,
@@ -107,13 +109,35 @@ def call_llm(
         span_attrs["recap.request_id"] = ctx.request_id
         span_attrs["recap.trace_id"] = ctx.trace_id
 
+    from stock_recap.observability.metrics import record_llm_call, record_llm_tokens
+
     with tracer.start_as_current_span("llm.call", attributes=span_attrs):
         provider = resolve_provider(backend)
-        return provider.call(
-            settings,
-            mode,
-            messages,
-            model=model,
-            db_path=db_path,
-            date=date,
-        )
+        try:
+            recap, tokens = provider.call(
+                settings,
+                mode,
+                messages,
+                model=model,
+                db_path=db_path,
+                date=date,
+            )
+        except LlmTransportError:
+            record_llm_call(backend, "transport_error")
+            raise
+        except LlmBudgetExceeded:
+            record_llm_call(backend, "budget_exceeded")
+            raise
+        except LlmBusinessError:
+            record_llm_call(backend, "business_error")
+            raise
+        except Exception:
+            record_llm_call(backend, "other")
+            raise
+
+        record_llm_call(backend, "ok")
+        if tokens.input_tokens:
+            record_llm_tokens(backend, "input", int(tokens.input_tokens))
+        if tokens.output_tokens:
+            record_llm_tokens(backend, "output", int(tokens.output_tokens))
+        return recap, tokens

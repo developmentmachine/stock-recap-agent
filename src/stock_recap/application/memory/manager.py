@@ -144,14 +144,33 @@ def _invalidate_prompt_version_cache() -> None:
 
 # ─── 基础记忆加载 ──────────────────────────────────────────────────────────────
 
+def _current_tenant_id() -> Optional[str]:
+    """从 ``current_run_context`` 读取 tenant_id（不存在则 None）。
+
+    单租户 / CLI / 周期任务保持 None 行为兼容；HTTP 请求经过 ``require_api_key`` 后会有值。
+    """
+    try:
+        from stock_recap.observability.runtime_context import current_run_context
+
+        ctx = current_run_context.get()
+        if ctx is not None:
+            return getattr(ctx, "tenant_id", None)
+    except Exception:
+        pass
+    return None
+
+
 def load_recent_memory(
     db_path: str,
     date: str,
     mode: Mode,
     limit: int = 5,
+    *,
+    tenant_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """取历史 recap 列表注入 LLM context（仅取摘要，避免 prompt 过长）。"""
-    runs = load_recent_runs(db_path, date, mode, limit)
+    effective_tenant = tenant_id if tenant_id is not None else _current_tenant_id()
+    runs = load_recent_runs(db_path, date, mode, limit, tenant_id=effective_tenant)
     result = []
     for run in runs:
         recap = run.get("recap") or {}
@@ -207,7 +226,7 @@ def extract_market_patterns(
         }))
         return None
 
-    runs = load_recent_runs(db_path, _today_str(), "daily", days)
+    runs = load_recent_runs(db_path, _today_str(), "daily", days, tenant_id=_current_tenant_id())
     if len(runs) < 3:
         return None  # 历史数据不足，不提炼
 

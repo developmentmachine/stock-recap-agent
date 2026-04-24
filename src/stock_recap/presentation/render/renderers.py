@@ -184,6 +184,17 @@ def render_markdown_for_wechat_work(recap: Recap) -> str:
         lines.append(f"\n*{recap.disclaimer}*")
         content = "\n".join(lines)
 
+    # 企业微信 markdown 单条上限 4096 字节，超出时截断 + 追加提示。
+    _LIMIT = 4096
+    encoded = content.encode("utf-8")
+    if len(encoded) > _LIMIT:
+        suffix = "\n\n…(已截断)"
+        budget = _LIMIT - len(suffix.encode("utf-8"))
+        truncated = encoded[:budget].decode("utf-8", errors="ignore")
+        content = truncated + suffix
+    return content
+
+
 def render_wechat_mp_html(recap: Recap) -> str:
     """
     微信公众号 HTML 排版。

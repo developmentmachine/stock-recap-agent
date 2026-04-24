@@ -31,6 +31,8 @@ class RecapAgentRunState:
     pattern_summary: Optional[str] = None
     backtest_context: Optional[str] = None
     prompt_version: str = ""
+    experiment_id: Optional[str] = None
+    variant_id: Optional[str] = None
     messages: List[Dict[str, str]] = field(default_factory=list)
 
     recap: Optional[Recap] = None

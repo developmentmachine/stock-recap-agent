@@ -16,13 +16,22 @@ from fastapi import FastAPI
 
 from stock_recap.config.settings import get_settings
 from stock_recap.interfaces.api.middleware import install_cors
-from stock_recap.interfaces.api.v1 import feedback_router, ops_router, recap_router
+from stock_recap.interfaces.api.v1 import (
+    feedback_router,
+    jobs_router,
+    ops_router,
+    recap_router,
+)
 
 
 @asynccontextmanager
 async def _app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    import logging
+
+    from stock_recap.observability.logging_setup import setup_structured_logging
     from stock_recap.observability.tracing import configure_tracing
 
+    setup_structured_logging(level=logging.INFO)
     configure_tracing(get_settings())
     yield
 
@@ -38,4 +47,5 @@ def create_app() -> FastAPI:
     app.include_router(ops_router)
     app.include_router(recap_router)
     app.include_router(feedback_router)
+    app.include_router(jobs_router)
     return app

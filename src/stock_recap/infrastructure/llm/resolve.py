@@ -23,6 +23,13 @@ def _interpret_model_spec(model_spec: str) -> Tuple[Optional[LlmBackend], Option
 
     返回 ``(backend, model_or_None)``。``cursor-cli`` / ``gemini-cli`` 的模型名一律返回 None
     （由 Settings 中的 cmd 决定实际调用的 CLI；模型选择在 CLI 侧）。
+
+    扩展原则（W4-5）：第三方 backend（包括测试的 ``replay``）只要在
+    ``LlmBackendRegistry`` 注册了别名，就能直接被识别 —— 我们不再硬编码
+    backend 列表，而是按「是否需要 model 名」分两组：
+      * ``cursor-cli`` 走 CLI（没有 model 字段，模型由 cmd 选）→ 返回 (b, None)；
+      * 其他后端（含 openai / ollama / gemini-cli / replay / 第三方）→
+        把 ``:`` 后所有内容当 model 名，没有则返回 None。
     """
     s = model_spec.strip()
     if not s:
@@ -30,8 +37,9 @@ def _interpret_model_spec(model_spec: str) -> Tuple[Optional[LlmBackend], Option
     parts = s.split(":")
     if len(parts) == 1:
         b = _model_prefix_to_backend(s)
-        if b in {"cursor-cli", "gemini-cli"}:
-            return b, None
+        # 单段：仅当 backend 不需要 model（CLI 类）才视作 backend；否则按 model 处理。
+        if b in {"cursor-cli", "gemini-cli", "replay"}:
+            return b, None  # type: ignore[return-value]
         return None, s
 
     prefix = parts[0].lower()
@@ -41,16 +49,15 @@ def _interpret_model_spec(model_spec: str) -> Tuple[Optional[LlmBackend], Option
         b = _model_prefix_to_backend(parts[1])
         if b == "cursor-cli":
             return b, None
-        if b in {"openai", "ollama"}:
+        if b is not None:
             return b, ":".join(parts[2:]) if len(parts) > 2 else None
         return None, None
 
     b = _model_prefix_to_backend(prefix)
     if b == "cursor-cli":
         return b, None
-    if b == "gemini-cli":
-        return b, ":".join(parts[1:]) if len(parts) > 1 else None
-    if b in {"openai", "ollama"}:
+    if b is not None:
+        # gemini-cli / openai / ollama / 任意第三方 backend：把剩下当 model
         return b, ":".join(parts[1:]) if len(parts) > 1 else None
     return None, s
 

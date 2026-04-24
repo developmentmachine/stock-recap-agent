@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from stock_recap.domain.models import (
@@ -93,7 +94,10 @@ def init_db(db_path: str) -> None:
               eval_json TEXT,
               error TEXT,
               latency_ms INTEGER,
-              tokens_json TEXT
+              tokens_json TEXT,
+              experiment_id TEXT,
+              variant_id TEXT,
+              tenant_id TEXT
             );
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_recap_runs_request_id
@@ -107,7 +111,8 @@ def init_db(db_path: str) -> None:
               created_at TEXT NOT NULL,
               rating INTEGER NOT NULL,
               tags_json TEXT NOT NULL,
-              comment TEXT NOT NULL
+              comment TEXT NOT NULL,
+              tenant_id TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_feedback_request_id
@@ -167,7 +172,8 @@ def init_db(db_path: str) -> None:
               next_attempt_at TEXT NOT NULL,
               last_error TEXT,
               created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL
+              updated_at TEXT NOT NULL,
+              tenant_id TEXT
             );
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_actions_dedup
@@ -202,6 +208,50 @@ def init_db(db_path: str) -> None:
               ON push_log(request_id, channel);
 
             /*
+             * jobs（W5-3）：长任务原语 —— 把同步 generate_once 包成可异步轮询的作业。
+             *
+             * 为什么独立一张表（不复用 pending_actions）：
+             * - pending_actions 是「副作用收件箱」，强调 UNIQUE(request_id, action_type)，
+             *   payload 体积小，重试逻辑由 outbox 接管；
+             * - jobs 是「客户端可见的 RPC 替身」，需要返回结果（result_json 可达数十 KB），
+             *   语义、TTL、清理周期都和 outbox 不一样；
+             * - 单独一张表也方便后期接独立 worker 进程消费。
+             *
+             * status 状态机：queued → running → done|failed|cancelled
+             *   - queued：等待 worker 接管；
+             *   - running：worker 已 claim，可能在 BackgroundTasks 中执行；
+             *   - done：成功，result_json 含完整 GenerateResponse；
+             *   - failed：失败，error 字段含原因；
+             *   - cancelled：人为取消（保留状态，方便审计）。
+             *
+             * 幂等：调用方可传 idempotency_key（HTTP Header X-Idempotency-Key），
+             * 同 (tenant_id, idempotency_key) 重入返回已有 job_id 而非新建。
+             */
+            CREATE TABLE IF NOT EXISTS jobs (
+              job_id TEXT PRIMARY KEY,
+              kind TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'queued',
+              tenant_id TEXT,
+              request_id TEXT,
+              idempotency_key TEXT,
+              request_json TEXT NOT NULL,
+              result_json TEXT,
+              error TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              started_at TEXT,
+              finished_at TEXT
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idem
+              ON jobs(tenant_id, idempotency_key)
+              WHERE idempotency_key IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_jobs_status_created
+              ON jobs(status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_jobs_tenant_status
+              ON jobs(tenant_id, status);
+
+            /*
              * tool_invocations：工具调用审计明细。
              * - 每次工具调用（成功 / 失败 / 拒绝）落一行；不依赖业务主表，可独立查询；
              * - 与 recap_runs 通过 request_id 关联，便于 join 出「这次复盘到底用了哪些工具」；
@@ -218,18 +268,128 @@ def init_db(db_path: str) -> None:
               arguments_json TEXT,
               latency_ms INTEGER,
               error TEXT,
-              created_at TEXT NOT NULL
+              created_at TEXT NOT NULL,
+              tenant_id TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_tool_inv_request_id
               ON tool_invocations(request_id);
             CREATE INDEX IF NOT EXISTS idx_tool_inv_tool_status
               ON tool_invocations(tool_name, status);
+
+            /*
+             * recap_audit：完整 LLM 输入/输出审计层，独立于 recap_runs 业务表。
+             * 为什么分表（而不是把 messages_json 加到 recap_runs）：
+             * 1. recap_runs 频繁被 list / join，messages_json 体积可达 100KB，会拖慢列表页；
+             * 2. 审计/合规/replay 是独立查询场景，单表更适合冷数据归档；
+             * 3. recap_runs schema 变更对历史数据兼容压力大，audit 表可放心迭代字段；
+             * 4. tool_invocations 已经按这个范式（独立表 + request_id 关联）做了。
+             *
+             * 关联：通过 request_id 与 recap_runs / tool_invocations 一一对应。
+             * 删除策略：归档/TTL 由调用方（cron / Wave 5 worker）按 created_at 清理。
+             */
+            CREATE TABLE IF NOT EXISTS recap_audit (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              request_id TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              mode TEXT NOT NULL,
+              provider TEXT NOT NULL,
+              prompt_version TEXT,
+              model TEXT,
+              trace_id TEXT,
+              session_id TEXT,
+              messages_json TEXT,
+              recap_json TEXT,
+              eval_json TEXT,
+              tokens_json TEXT,
+              llm_error TEXT,
+              budget_error TEXT,
+              critic_retries_used INTEGER NOT NULL DEFAULT 0,
+              experiment_id TEXT,
+              variant_id TEXT,
+              tenant_id TEXT
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_recap_audit_request_id
+              ON recap_audit(request_id);
+            CREATE INDEX IF NOT EXISTS idx_recap_audit_created_at
+              ON recap_audit(created_at);
+            CREATE INDEX IF NOT EXISTS idx_recap_audit_mode_created
+              ON recap_audit(mode, created_at);
+
+            /*
+             * prompt_experiments：声明一个实验（实验维度，例如 section_titles_v2_ab）。
+             * 同一时间一个 mode 应只激活一个 experiment（多个 active 时按 ``starts_at`` 取最新）。
+             */
+            CREATE TABLE IF NOT EXISTS prompt_experiments (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              experiment_id TEXT NOT NULL UNIQUE,
+              mode TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'active',
+              starts_at TEXT,
+              ends_at TEXT,
+              description TEXT,
+              metadata_json TEXT,
+              created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_prompt_exp_mode_status
+              ON prompt_experiments(mode, status);
+
+            /*
+             * prompt_experiment_variants：实验下属的 variant（含权重 + prompt_version 绑定）。
+             * traffic_weight 单位无关；同一 experiment 下加和后做归一化分桶。
+             */
+            CREATE TABLE IF NOT EXISTS prompt_experiment_variants (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              experiment_id TEXT NOT NULL,
+              variant_id TEXT NOT NULL,
+              prompt_version TEXT NOT NULL,
+              traffic_weight INTEGER NOT NULL DEFAULT 1,
+              metadata_json TEXT,
+              created_at TEXT NOT NULL,
+              UNIQUE(experiment_id, variant_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_prompt_exp_var_exp
+              ON prompt_experiment_variants(experiment_id);
+
+            /*
+             * tenants（W5-2）：多租户主表。
+             * - api_key_hash 存 SHA-256(api_key) 的十六进制摘要，原始 key 不落库；
+             * - role 是该租户的默认 RBAC 角色，可被请求级 PrincipalContext 覆盖；
+             * - status: active | disabled；disabled 时 require_api_key 会拒；
+             * - metadata_json 留给前端可见的描述 / SLA / 配额（不在本 wave 实现限流）。
+             */
+            CREATE TABLE IF NOT EXISTS tenants (
+              tenant_id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              api_key_hash TEXT NOT NULL UNIQUE,
+              role TEXT NOT NULL DEFAULT 'user',
+              status TEXT NOT NULL DEFAULT 'active',
+              metadata_json TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tenants_status
+              ON tenants(status);
             """
         )
 
     # 增量 ALTER TABLE（老库升级兼容）
     _safe_add_column(db_path, "recap_runs", "rendered_wechat_text", "TEXT")
+    # Wave 4 / w4-4：A/B 实验落库
+    _safe_add_column(db_path, "recap_runs", "experiment_id", "TEXT")
+    _safe_add_column(db_path, "recap_runs", "variant_id", "TEXT")
+    _safe_add_column(db_path, "recap_audit", "experiment_id", "TEXT")
+    _safe_add_column(db_path, "recap_audit", "variant_id", "TEXT")
+    # Wave 5 / w5-2：多租户落库
+    _safe_add_column(db_path, "recap_runs", "tenant_id", "TEXT")
+    _safe_add_column(db_path, "recap_audit", "tenant_id", "TEXT")
+    _safe_add_column(db_path, "recap_feedback", "tenant_id", "TEXT")
+    _safe_add_column(db_path, "tool_invocations", "tenant_id", "TEXT")
+    _safe_add_column(db_path, "pending_actions", "tenant_id", "TEXT")
 
 
 def _safe_add_column(db_path: str, table: str, column: str, col_type: str) -> None:
@@ -267,6 +427,9 @@ def insert_run(
     error: Optional[str],
     latency_ms: int,
     tokens: LlmTokens,
+    experiment_id: Optional[str] = None,
+    variant_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> None:
     with get_conn(db_path) as conn:
         conn.execute(
@@ -274,8 +437,9 @@ def insert_run(
             INSERT INTO recap_runs (
               request_id, created_at, mode, provider, date, prompt_version, model,
               snapshot_json, features_json, recap_json, rendered_markdown,
-              rendered_wechat_text, eval_json, error, latency_ms, tokens_json
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              rendered_wechat_text, eval_json, error, latency_ms, tokens_json,
+              experiment_id, variant_id, tenant_id
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 request_id,
@@ -294,6 +458,9 @@ def insert_run(
                 error,
                 int(latency_ms),
                 _stable_json(tokens.__dict__),
+                experiment_id,
+                variant_id,
+                tenant_id,
             ),
         )
 
@@ -303,19 +470,26 @@ def load_recent_runs(
     date: str,
     mode: Mode,
     limit: int,
+    *,
+    tenant_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """读取 date 之前的最近 N 条成功运行记录（含 recap + eval）。"""
+    """读取 date 之前的最近 N 条成功运行记录（含 recap + eval）。
+
+    ``tenant_id`` 显式给出时强制隔离；不给（None）则保持全局视图，便于 CLI / 单租户兼容。
+    """
+    where = ["date < ?", "mode = ?", "recap_json IS NOT NULL"]
+    params: List[Any] = [date, mode]
+    if tenant_id is not None:
+        where.append("tenant_id = ?")
+        params.append(tenant_id)
+    params.append(limit)
+    sql = (
+        "SELECT created_at, date, mode, provider, prompt_version, recap_json, eval_json "
+        "FROM recap_runs WHERE " + " AND ".join(where) +
+        " ORDER BY date DESC, created_at DESC LIMIT ?"
+    )
     with get_conn(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT created_at, date, mode, provider, prompt_version, recap_json, eval_json
-            FROM recap_runs
-            WHERE date < ? AND mode = ? AND recap_json IS NOT NULL
-            ORDER BY date DESC, created_at DESC
-            LIMIT ?
-            """,
-            (date, mode, limit),
-        ).fetchall()
+        rows = conn.execute(sql, tuple(params)).fetchall()
     result = []
     for row in rows:
         result.append(
@@ -397,27 +571,37 @@ def insert_feedback(
     rating: int,
     tags: List[str],
     comment: str,
+    tenant_id: Optional[str] = None,
 ) -> None:
     with get_conn(db_path) as conn:
         conn.execute(
             """
-            INSERT INTO recap_feedback (request_id, created_at, rating, tags_json, comment)
-            VALUES (?,?,?,?,?)
+            INSERT INTO recap_feedback
+              (request_id, created_at, rating, tags_json, comment, tenant_id)
+            VALUES (?,?,?,?,?,?)
             """,
-            (request_id, created_at, rating, _stable_json(tags), comment),
+            (request_id, created_at, rating, _stable_json(tags), comment, tenant_id),
         )
 
 
-def load_feedback_summary(db_path: str, limit: int = 30) -> Dict[str, Any]:
-    """聚合最近反馈：平均分、高频好评/差评 tag。"""
+def load_feedback_summary(
+    db_path: str,
+    limit: int = 30,
+    *,
+    tenant_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """聚合最近反馈：平均分、高频好评/差评 tag。``tenant_id`` 给出时按租户隔离。"""
+    if tenant_id is not None:
+        sql = (
+            "SELECT rating, tags_json FROM recap_feedback "
+            "WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ?"
+        )
+        params: tuple = (tenant_id, limit)
+    else:
+        sql = "SELECT rating, tags_json FROM recap_feedback ORDER BY created_at DESC LIMIT ?"
+        params = (limit,)
     with get_conn(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT rating, tags_json FROM recap_feedback
-            ORDER BY created_at DESC LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
 
     if not rows:
         return {"avg_rating": None, "low_rated_tags": [], "praise_tags": []}
@@ -604,6 +788,7 @@ def enqueue_pending_action(
     action_type: str,
     payload_json: str,
     now_iso: str,
+    tenant_id: Optional[str] = None,
 ) -> bool:
     """幂等入队：``UNIQUE(request_id, action_type)`` 已存在则返回 False。
 
@@ -615,10 +800,18 @@ def enqueue_pending_action(
                 """
                 INSERT INTO pending_actions
                   (request_id, action_type, payload_json, status, attempts,
-                   next_attempt_at, last_error, created_at, updated_at)
-                VALUES (?,?,?, 'pending', 0, ?, NULL, ?, ?)
+                   next_attempt_at, last_error, created_at, updated_at, tenant_id)
+                VALUES (?,?,?, 'pending', 0, ?, NULL, ?, ?, ?)
                 """,
-                (request_id, action_type, payload_json, now_iso, now_iso, now_iso),
+                (
+                    request_id,
+                    action_type,
+                    payload_json,
+                    now_iso,
+                    now_iso,
+                    now_iso,
+                    tenant_id,
+                ),
             )
             return True
         except sqlite3.IntegrityError:
@@ -767,6 +960,7 @@ def insert_tool_invocation(
     latency_ms: Optional[int],
     error: Optional[str],
     created_at: str,
+    tenant_id: Optional[str] = None,
 ) -> None:
     """单次工具调用落库；任何异常向上抛由调用方决定是否吞掉。"""
     args_json = _stable_json(arguments) if arguments is not None else None
@@ -775,8 +969,8 @@ def insert_tool_invocation(
             """
             INSERT INTO tool_invocations
               (request_id, tool_name, status, read_only, principal_role,
-               arguments_json, latency_ms, error, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?)
+               arguments_json, latency_ms, error, created_at, tenant_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 request_id,
@@ -788,6 +982,7 @@ def insert_tool_invocation(
                 latency_ms,
                 error,
                 created_at,
+                tenant_id,
             ),
         )
 
@@ -809,6 +1004,242 @@ def load_recent_tool_invocations(
         where.append("tool_name = ?")
         params.append(tool_name)
     sql = "SELECT * FROM tool_invocations"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(int(limit))
+    with get_conn(db_path) as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ─── recap_audit（完整 messages + recap，replay 用） ─────────────────────────
+
+
+def insert_recap_audit(
+    db_path: str,
+    *,
+    request_id: str,
+    created_at: str,
+    mode: str,
+    provider: str,
+    prompt_version: Optional[str],
+    model: Optional[str],
+    trace_id: Optional[str],
+    session_id: Optional[str],
+    messages: Optional[List[Dict[str, Any]]],
+    recap: Optional[Recap],
+    eval_obj: Optional[Dict[str, Any]],
+    tokens: Optional[LlmTokens],
+    llm_error: Optional[str],
+    budget_error: Optional[str],
+    critic_retries_used: int,
+    experiment_id: Optional[str] = None,
+    variant_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> None:
+    """落 audit；``request_id`` 唯一约束保证幂等（同次 generate 重复调用只保留首条）。"""
+    messages_json = _stable_json(messages) if messages is not None else None
+    recap_json = _stable_json(recap.model_dump()) if recap is not None else None
+    eval_json = _stable_json(eval_obj) if eval_obj is not None else None
+    tokens_json = _stable_json(tokens.__dict__) if tokens is not None else None
+    with get_conn(db_path) as conn:
+        try:
+            conn.execute(
+                """
+                INSERT INTO recap_audit
+                  (request_id, created_at, mode, provider, prompt_version, model,
+                   trace_id, session_id, messages_json, recap_json, eval_json,
+                   tokens_json, llm_error, budget_error, critic_retries_used,
+                   experiment_id, variant_id, tenant_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    request_id,
+                    created_at,
+                    mode,
+                    provider,
+                    prompt_version,
+                    model,
+                    trace_id,
+                    session_id,
+                    messages_json,
+                    recap_json,
+                    eval_json,
+                    tokens_json,
+                    llm_error,
+                    budget_error,
+                    int(critic_retries_used),
+                    experiment_id,
+                    variant_id,
+                    tenant_id,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            # 同 request_id 重入：保留最早的一份（更接近真实 LLM 输入）。
+            return
+
+
+def load_recap_audit(
+    db_path: str,
+    *,
+    request_id: Optional[str] = None,
+    mode: Optional[str] = None,
+    limit: int = 20,
+    tenant_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    where: List[str] = []
+    params: List[Any] = []
+    if request_id is not None:
+        where.append("request_id = ?")
+        params.append(request_id)
+    if mode is not None:
+        where.append("mode = ?")
+        params.append(mode)
+    if tenant_id is not None:
+        where.append("tenant_id = ?")
+        params.append(tenant_id)
+    sql = "SELECT * FROM recap_audit"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(int(limit))
+    with get_conn(db_path) as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        for jkey in ("messages_json", "recap_json", "eval_json", "tokens_json"):
+            if d.get(jkey):
+                try:
+                    d[jkey.removesuffix("_json")] = json.loads(d[jkey])
+                except Exception:
+                    d[jkey.removesuffix("_json")] = None
+        out.append(d)
+    return out
+
+
+# ─── prompt_experiments / variants ─────────────────────────────────────────
+
+
+def upsert_prompt_experiment(
+    db_path: str,
+    *,
+    experiment_id: str,
+    mode: str,
+    status: str = "active",
+    starts_at: Optional[str] = None,
+    ends_at: Optional[str] = None,
+    description: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    created_at: Optional[str] = None,
+) -> None:
+    meta_json = _stable_json(metadata) if metadata is not None else None
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO prompt_experiments
+              (experiment_id, mode, status, starts_at, ends_at, description, metadata_json, created_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(experiment_id) DO UPDATE SET
+              mode=excluded.mode,
+              status=excluded.status,
+              starts_at=excluded.starts_at,
+              ends_at=excluded.ends_at,
+              description=excluded.description,
+              metadata_json=excluded.metadata_json
+            """,
+            (
+                experiment_id,
+                mode,
+                status,
+                starts_at,
+                ends_at,
+                description,
+                meta_json,
+                created_at or starts_at or "",
+            ),
+        )
+
+
+def upsert_prompt_experiment_variant(
+    db_path: str,
+    *,
+    experiment_id: str,
+    variant_id: str,
+    prompt_version: str,
+    traffic_weight: int = 1,
+    metadata: Optional[Dict[str, Any]] = None,
+    created_at: str,
+) -> None:
+    meta_json = _stable_json(metadata) if metadata is not None else None
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO prompt_experiment_variants
+              (experiment_id, variant_id, prompt_version, traffic_weight, metadata_json, created_at)
+            VALUES (?,?,?,?,?,?)
+            ON CONFLICT(experiment_id, variant_id) DO UPDATE SET
+              prompt_version=excluded.prompt_version,
+              traffic_weight=excluded.traffic_weight,
+              metadata_json=excluded.metadata_json
+            """,
+            (
+                experiment_id,
+                variant_id,
+                prompt_version,
+                int(max(0, traffic_weight)),
+                meta_json,
+                created_at,
+            ),
+        )
+
+
+def load_active_experiment(
+    db_path: str, *, mode: str
+) -> Optional[Dict[str, Any]]:
+    """对给定 mode 取一条「当前 active」实验；若有多条以 starts_at 最大为准。"""
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM prompt_experiments
+            WHERE mode = ? AND status = 'active'
+            ORDER BY COALESCE(starts_at, '') DESC, id DESC
+            LIMIT 1
+            """,
+            (mode,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def load_experiment_variants(
+    db_path: str, *, experiment_id: str
+) -> List[Dict[str, Any]]:
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM prompt_experiment_variants
+            WHERE experiment_id = ? AND traffic_weight > 0
+            ORDER BY variant_id ASC
+            """,
+            (experiment_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_prompt_experiments(
+    db_path: str, *, mode: Optional[str] = None, status: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    where: List[str] = []
+    params: List[Any] = []
+    if mode is not None:
+        where.append("mode = ?")
+        params.append(mode)
+    if status is not None:
+        where.append("status = ?")
+        params.append(status)
+    sql = "SELECT * FROM prompt_experiments"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id DESC LIMIT ?"
@@ -867,18 +1298,30 @@ def load_metrics(db_path: str, today: str, prompt_version: str) -> MetricsSnapsh
 
 # ─── 历史记录查询（供 /v1/history） ─────────────────────────────────────────────
 
-def load_history(db_path: str, limit: int = 20) -> List[Dict[str, Any]]:
+def load_history(
+    db_path: str,
+    limit: int = 20,
+    *,
+    tenant_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    capped = int(max(1, min(limit, 200)))
+    if tenant_id is not None:
+        sql = (
+            "SELECT request_id, created_at, mode, provider, date, "
+            "       prompt_version, model, eval_json, error, latency_ms "
+            "FROM recap_runs WHERE tenant_id = ? "
+            "ORDER BY created_at DESC LIMIT ?"
+        )
+        params: tuple = (tenant_id, capped)
+    else:
+        sql = (
+            "SELECT request_id, created_at, mode, provider, date, "
+            "       prompt_version, model, eval_json, error, latency_ms "
+            "FROM recap_runs ORDER BY created_at DESC LIMIT ?"
+        )
+        params = (capped,)
     with get_conn(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT request_id, created_at, mode, provider, date,
-                   prompt_version, model, eval_json, error, latency_ms
-            FROM recap_runs
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (int(max(1, min(limit, 200))),),
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return [
         {
             "request_id": row["request_id"],
@@ -894,3 +1337,324 @@ def load_history(db_path: str, limit: int = 20) -> List[Dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+# ─── tenants CRUD（W5-2） ────────────────────────────────────────────────────
+
+
+def upsert_tenant(
+    db_path: str,
+    *,
+    tenant_id: str,
+    name: str,
+    api_key_hash: str,
+    role: str = "user",
+    status: str = "active",
+    metadata: Optional[Dict[str, Any]] = None,
+    now_iso: Optional[str] = None,
+) -> None:
+    """upsert 一个租户；同 ``tenant_id`` 重入只更新可变字段。
+
+    ``now_iso`` 不传时默认当前 UTC（CLI / 测试用例不必次次都拼时间字符串）。
+    """
+    if now_iso is None:
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    meta_json = _stable_json(metadata) if metadata is not None else None
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO tenants
+              (tenant_id, name, api_key_hash, role, status, metadata_json,
+               created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(tenant_id) DO UPDATE SET
+              name=excluded.name,
+              api_key_hash=excluded.api_key_hash,
+              role=excluded.role,
+              status=excluded.status,
+              metadata_json=excluded.metadata_json,
+              updated_at=excluded.updated_at
+            """,
+            (tenant_id, name, api_key_hash, role, status, meta_json, now_iso, now_iso),
+        )
+
+
+def load_tenant_by_api_key_hash(
+    db_path: str, *, api_key_hash: str
+) -> Optional[Dict[str, Any]]:
+    """按 api_key_hash 反查 tenant；找不到 / status != active 都返回 None。"""
+    with get_conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM tenants WHERE api_key_hash = ?",
+            (api_key_hash,),
+        ).fetchone()
+    if row is None:
+        return None
+    if row["status"] != "active":
+        return None
+    return dict(row)
+
+
+def list_tenants(
+    db_path: str, *, status: Optional[str] = None, limit: int = 100
+) -> List[Dict[str, Any]]:
+    sql = "SELECT * FROM tenants"
+    params: List[Any] = []
+    if status is not None:
+        sql += " WHERE status = ?"
+        params.append(status)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(int(limit))
+    with get_conn(db_path) as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_tenants(db_path: str, *, status: Optional[str] = "active") -> int:
+    sql = "SELECT COUNT(*) AS cnt FROM tenants"
+    params: List[Any] = []
+    if status is not None:
+        sql += " WHERE status = ?"
+        params.append(status)
+    with get_conn(db_path) as conn:
+        row = conn.execute(sql, tuple(params)).fetchone()
+    return int(row["cnt"] or 0)
+
+
+# ─── jobs CRUD（W5-3：长任务原语） ──────────────────────────────────────────
+
+
+def insert_job(
+    db_path: str,
+    *,
+    job_id: str,
+    kind: str,
+    request_payload: Dict[str, Any],
+    tenant_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+    status: str = "queued",
+    created_at: Optional[str] = None,
+) -> bool:
+    """新建一个 job 行；同 (tenant_id, idempotency_key) 已存在时返回 False。
+
+    返回 True = 实际新建；False = 命中幂等键，调用方应改读 ``load_job_by_idem``。
+    """
+    if created_at is None:
+        created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with get_conn(db_path) as conn:
+        try:
+            conn.execute(
+                """
+                INSERT INTO jobs
+                  (job_id, kind, status, tenant_id, idempotency_key,
+                   request_json, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?)
+                """,
+                (
+                    job_id,
+                    kind,
+                    status,
+                    tenant_id,
+                    idempotency_key,
+                    _stable_json(request_payload),
+                    created_at,
+                    created_at,
+                ),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def load_job(
+    db_path: str,
+    *,
+    job_id: str,
+    tenant_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """按 job_id 取一条 job；多租户场景下传 ``tenant_id`` 防止越权读其他租户。"""
+    sql = "SELECT * FROM jobs WHERE job_id = ?"
+    params: List[Any] = [job_id]
+    if tenant_id is not None:
+        sql += " AND tenant_id = ?"
+        params.append(tenant_id)
+    with get_conn(db_path) as conn:
+        row = conn.execute(sql, tuple(params)).fetchone()
+    if row is None:
+        return None
+    return _decode_job_row(row)
+
+
+def load_job_by_idem(
+    db_path: str,
+    *,
+    tenant_id: Optional[str],
+    idempotency_key: str,
+) -> Optional[Dict[str, Any]]:
+    """按幂等键查 job；传入 ``tenant_id=None`` 时匹配未绑定租户的行。"""
+    if tenant_id is None:
+        sql = (
+            "SELECT * FROM jobs WHERE idempotency_key = ? "
+            "AND tenant_id IS NULL ORDER BY created_at DESC LIMIT 1"
+        )
+        params: tuple = (idempotency_key,)
+    else:
+        sql = (
+            "SELECT * FROM jobs WHERE idempotency_key = ? AND tenant_id = ? "
+            "ORDER BY created_at DESC LIMIT 1"
+        )
+        params = (idempotency_key, tenant_id)
+    with get_conn(db_path) as conn:
+        row = conn.execute(sql, params).fetchone()
+    if row is None:
+        return None
+    return _decode_job_row(row)
+
+
+def list_jobs(
+    db_path: str,
+    *,
+    tenant_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    where: List[str] = []
+    params: List[Any] = []
+    if tenant_id is not None:
+        where.append("tenant_id = ?")
+        params.append(tenant_id)
+    if status is not None:
+        where.append("status = ?")
+        params.append(status)
+    sql = "SELECT * FROM jobs"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(int(limit))
+    with get_conn(db_path) as conn:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+    return [_decode_job_row(r) for r in rows]
+
+
+def update_job_running(
+    db_path: str,
+    *,
+    job_id: str,
+    request_id: Optional[str] = None,
+    started_at: Optional[str] = None,
+) -> None:
+    """worker claim 一个 queued job：原子地把 status 改成 running。"""
+    if started_at is None:
+        started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+              SET status = 'running',
+                  started_at = COALESCE(started_at, ?),
+                  request_id = COALESCE(?, request_id),
+                  updated_at = ?
+              WHERE job_id = ? AND status IN ('queued', 'running')
+            """,
+            (started_at, request_id, started_at, job_id),
+        )
+
+
+def mark_job_done(
+    db_path: str,
+    *,
+    job_id: str,
+    result_payload: Dict[str, Any],
+    request_id: Optional[str] = None,
+    finished_at: Optional[str] = None,
+) -> None:
+    if finished_at is None:
+        finished_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+              SET status = 'done',
+                  result_json = ?,
+                  request_id = COALESCE(?, request_id),
+                  finished_at = ?,
+                  updated_at = ?
+              WHERE job_id = ?
+            """,
+            (
+                _stable_json(result_payload),
+                request_id,
+                finished_at,
+                finished_at,
+                job_id,
+            ),
+        )
+
+
+def mark_job_failed(
+    db_path: str,
+    *,
+    job_id: str,
+    error: str,
+    request_id: Optional[str] = None,
+    finished_at: Optional[str] = None,
+) -> None:
+    if finished_at is None:
+        finished_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with get_conn(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+              SET status = 'failed',
+                  error = ?,
+                  request_id = COALESCE(?, request_id),
+                  finished_at = ?,
+                  updated_at = ?
+              WHERE job_id = ?
+            """,
+            (error[:2000], request_id, finished_at, finished_at, job_id),
+        )
+
+
+def claim_due_queued_jobs(
+    db_path: str,
+    *,
+    older_than_iso: str,
+    limit: int = 8,
+) -> List[Dict[str, Any]]:
+    """sweeper 用：把超过阈值仍 queued 的孤儿 job 抢回 running。
+
+    适用场景：BackgroundTasks 所在 worker 进程崩溃，job 永远停在 queued。
+    """
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM jobs
+              WHERE status = 'queued' AND created_at <= ?
+              ORDER BY created_at ASC LIMIT ?
+            """,
+            (older_than_iso, int(limit)),
+        ).fetchall()
+        if not rows:
+            return []
+        ids = [r["job_id"] for r in rows]
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        placeholders = ",".join("?" * len(ids))
+        conn.execute(
+            f"UPDATE jobs SET status='running', started_at=COALESCE(started_at, ?), "
+            f"updated_at=? WHERE job_id IN ({placeholders})",
+            (now_iso, now_iso, *ids),
+        )
+    return [_decode_job_row(r) for r in rows]
+
+
+def _decode_job_row(row) -> Dict[str, Any]:
+    d = dict(row)
+    for jkey in ("request_json", "result_json"):
+        raw = d.get(jkey)
+        if raw:
+            try:
+                d[jkey.removesuffix("_json")] = json.loads(raw)
+            except Exception:
+                d[jkey.removesuffix("_json")] = None
+    return d

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from stock_recap.application.memory.manager import check_and_run_evolution
 from stock_recap.config.settings import Settings, get_settings
 from stock_recap.domain.models import FeedbackRequest
+from stock_recap.domain.principal import PrincipalContext
 from stock_recap.infrastructure.persistence.db import init_db, insert_feedback
 from stock_recap.interfaces.api.deps import require_api_key, stable_json, utc_now_iso
 from stock_recap.policy.guardrails import GuardrailError, validate_feedback_request
@@ -18,10 +19,11 @@ logger = logging.getLogger("stock_recap.interfaces.api.feedback")
 router = APIRouter(tags=["recap"])
 
 
-@router.post("/v1/feedback", dependencies=[Depends(require_api_key)])
+@router.post("/v1/feedback")
 def api_feedback(
     req: FeedbackRequest,
     settings: Settings = Depends(get_settings),
+    principal: PrincipalContext = Depends(require_api_key),
 ) -> Dict[str, Any]:
     try:
         validate_feedback_request(req)
@@ -35,6 +37,7 @@ def api_feedback(
         rating=int(req.rating),
         tags=req.tags,
         comment=req.comment,
+        tenant_id=principal.tenant_id,
     )
 
     force = req.rating <= 2

@@ -9,6 +9,7 @@ from typing import Any, Callable, Iterator, List, Optional, Tuple, cast
 
 from opentelemetry import trace
 
+from stock_recap.application.experiments import select_variant
 from stock_recap.application.memory.manager import (
     check_and_run_evolution,
     extract_market_patterns,
@@ -27,7 +28,15 @@ from stock_recap.infrastructure.data.features import build_features
 from stock_recap.infrastructure.llm.backends import call_llm, model_effective
 from stock_recap.infrastructure.llm.eval import auto_eval
 from stock_recap.infrastructure.llm.prompts import build_messages
-from stock_recap.infrastructure.persistence.db import insert_run, load_feedback_summary
+from stock_recap.infrastructure.persistence.db import (
+    insert_recap_audit,
+    insert_run,
+    load_feedback_summary,
+)
+from stock_recap.observability.metrics import (
+    record_phase_duration,
+    record_recap_run,
+)
 from stock_recap.observability.tracing import get_tracer
 from stock_recap.policy.guardrails import clamp_llm_messages, coerce_recap_output
 from stock_recap.presentation.render.renderers import render_markdown, render_wechat_text
@@ -71,14 +80,16 @@ def _phase_recall(state: RecapAgentRunState, tracer: Any) -> None:
     settings = state.settings
     with _span_phase(tracer, "recap.agent.recall", {"agent.phase": "recall"}):
         assert state.snapshot is not None and state.features is not None
+        tenant_id = state.run_ctx.tenant_id
         state.memory = load_recent_memory(
             settings.db_path,
             date=state.snapshot.date,
             mode=req.mode,
             limit=settings.max_history_for_context,
+            tenant_id=tenant_id,
         )
         state.evolution_guidance = load_evolution_guidance(settings.db_path)
-        state.feedback_summary = load_feedback_summary(settings.db_path)
+        state.feedback_summary = load_feedback_summary(settings.db_path, tenant_id=tenant_id)
 
         try:
             state.pattern_summary = extract_market_patterns(
@@ -102,6 +113,27 @@ def _phase_recall(state: RecapAgentRunState, tracer: Any) -> None:
             state.backtest_context = None
 
         state.prompt_version = get_prompt_version(settings.db_path)
+
+        # 实验分桶：用 session_id 优先（同一用户黏性），其次 request_id（一次性）。
+        # 命中后 prompt_version 被 variant 绑定的版本覆盖，但活跃全局版本仍记 trace。
+        stickiness = state.run_ctx.session_id or state.run_ctx.request_id
+        assignment = select_variant(
+            settings.db_path, mode=req.mode, stickiness_key=stickiness
+        )
+        if assignment is not None:
+            state.experiment_id = assignment.experiment_id
+            state.variant_id = assignment.variant_id
+            state.prompt_version = assignment.prompt_version
+            logger.info(
+                _stable_json(
+                    {
+                        "event": "prompt_variant_assigned",
+                        "experiment_id": assignment.experiment_id,
+                        "variant_id": assignment.variant_id,
+                        "prompt_version": assignment.prompt_version,
+                    }
+                )
+            )
 
 
 def _phase_plan(state: RecapAgentRunState, tracer: Any) -> None:
@@ -269,7 +301,38 @@ def _phase_persist(state: RecapAgentRunState, tracer: Any) -> None:
             error=state.llm_error,
             latency_ms=latency_ms,
             tokens=state.tokens,
+            experiment_id=state.experiment_id,
+            variant_id=state.variant_id,
+            tenant_id=run_ctx.tenant_id,
         )
+
+        if settings.recap_audit_enabled:
+            try:
+                insert_recap_audit(
+                    settings.db_path,
+                    request_id=run_ctx.request_id,
+                    created_at=_utc_now_iso(),
+                    mode=str(req.mode),
+                    provider=str(req.provider),
+                    prompt_version=state.prompt_version,
+                    model=model_effective(settings, req.model) if req.force_llm else None,
+                    trace_id=run_ctx.trace_id,
+                    session_id=run_ctx.session_id,
+                    messages=state.messages or None,
+                    recap=state.recap,
+                    eval_obj=state.eval_result or None,
+                    tokens=state.tokens,
+                    llm_error=state.llm_error,
+                    budget_error=state.budget_error,
+                    critic_retries_used=state.critic_retries_used,
+                    experiment_id=state.experiment_id,
+                    variant_id=state.variant_id,
+                    tenant_id=run_ctx.tenant_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    _stable_json({"event": "recap_audit_write_failed", "error": str(e)})
+                )
 
 
 def _phase_reflect(state: RecapAgentRunState, tracer: Any) -> None:
@@ -394,14 +457,43 @@ def _check_budget_between_phases(state: RecapAgentRunState, name: str) -> bool:
     return True
 
 
+def _run_phase_with_metrics(
+    state: RecapAgentRunState, tracer: Any, name: str, fn: Callable[[RecapAgentRunState, Any], None]
+) -> None:
+    """单 phase 执行 + Histogram 计时；失败也记一次（标 status=error）。
+
+    把计时放在最外层确保即便 phase 内部抛了未被自身吞掉的异常，histogram 仍被记录。
+    """
+    t0 = time.monotonic()
+    try:
+        fn(state, tracer)
+    except Exception:
+        record_phase_duration(f"{name}:error", (time.monotonic() - t0) * 1000.0)
+        raise
+    record_phase_duration(name, (time.monotonic() - t0) * 1000.0)
+
+
+def _record_run_outcome(state: RecapAgentRunState) -> None:
+    """统一记录 ``recap_runs_total``：ok=有 recap、failed=有 error 但无 recap、empty=非 LLM 路径。"""
+    req = state.request
+    if state.llm_error and state.recap is None:
+        status = "failed"
+    elif state.recap is not None:
+        status = "ok"
+    else:
+        status = "empty"
+    record_recap_run(mode=str(req.mode), provider=str(req.provider), status=status)
+
+
 def _run_all_phases(state: RecapAgentRunState, tracer: Any) -> GenerateResponse:
     for name, fn in _PHASE_ORDER:
         ok = _check_budget_between_phases(state, name)
         if not ok and name in {"act", "critique"}:
             # 跳过 LLM 与评测，但 persist/reflect 仍执行
             continue
-        fn(state, tracer)
+        _run_phase_with_metrics(state, tracer, name, fn)
     _finalize_span_attributes(state)
+    _record_run_outcome(state)
     return _build_generate_response(state)
 
 
@@ -448,7 +540,7 @@ def iter_recap_agent_ndjson(state: RecapAgentRunState) -> Iterator[str]:
                     budget_error=state.budget_error,
                 )
                 continue
-            fn(state, tracer)
+            _run_phase_with_metrics(state, tracer, name, fn)
             extra: dict[str, Any] = {}
             if state.snapshot is not None:
                 extra["date"] = state.snapshot.date
@@ -478,6 +570,7 @@ def iter_recap_agent_ndjson(state: RecapAgentRunState) -> Iterator[str]:
         return
 
     _finalize_span_attributes(state)
+    _record_run_outcome(state)
     resp = _build_generate_response(state)
     http_status = 503 if (req.force_llm and resp.recap is None) else 200
     state.stream_pipeline_completed = True

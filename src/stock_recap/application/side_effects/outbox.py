@@ -32,6 +32,7 @@ from stock_recap.infrastructure.persistence.db import (
     mark_pending_action_done,
     mark_pending_action_failed,
 )
+from stock_recap.observability.metrics import record_outbox_action
 
 logger = logging.getLogger("stock_recap.side_effects.outbox")
 
@@ -85,21 +86,45 @@ def get_registered_handlers() -> Dict[str, ActionHandler]:
     return dict(_HANDLERS)
 
 
+def _resolve_tenant_id() -> Optional[str]:
+    """Outbox 入队时显式没传就从 ``current_run_context`` / ``current_principal`` 推断。"""
+    try:
+        from stock_recap.observability.runtime_context import current_run_context
+
+        ctx = current_run_context.get()
+        if ctx is not None and getattr(ctx, "tenant_id", None):
+            return ctx.tenant_id
+    except Exception:
+        pass
+    try:
+        from stock_recap.domain.principal import get_principal
+
+        return get_principal().tenant_id
+    except Exception:
+        return None
+
+
 def enqueue(
     db_path: str,
     *,
     request_id: str,
     action_type: str,
     payload: Optional[Dict[str, Any]] = None,
+    tenant_id: Optional[str] = None,
 ) -> bool:
-    """幂等入队；返回 True 表示新建，False 表示已存在（不视为失败）。"""
+    """幂等入队；返回 True 表示新建，False 表示已存在（不视为失败）。
+
+    ``tenant_id`` 未显式传入时，会按 RunContext / PrincipalContext 顺序推断。
+    """
     now = _iso(_utc_now())
+    effective_tenant = tenant_id if tenant_id is not None else _resolve_tenant_id()
     inserted = enqueue_pending_action(
         db_path,
         request_id=request_id,
         action_type=action_type,
         payload_json=_stable_json(payload or {}),
         now_iso=now,
+        tenant_id=effective_tenant,
     )
     logger.info(
         _stable_json(
@@ -107,6 +132,7 @@ def enqueue(
                 "event": "outbox_enqueue",
                 "request_id": request_id,
                 "action_type": action_type,
+                "tenant_id": effective_tenant,
                 "inserted": inserted,
             }
         )
@@ -138,6 +164,7 @@ def process_due(db_path: str, *, batch: int = 16) -> ProcessSummary:
                 final=True,
             )
             summary.failed_final += 1
+            record_outbox_action(action_type, "failed")
             continue
 
         handler = _HANDLERS.get(action_type)
@@ -152,6 +179,7 @@ def process_due(db_path: str, *, batch: int = 16) -> ProcessSummary:
             )
             summary.failed_final += 1
             summary.errors.append(f"no_handler:{action_type}")
+            record_outbox_action(action_type, "failed")
             continue
 
         t0 = time.monotonic()
@@ -161,6 +189,7 @@ def process_due(db_path: str, *, batch: int = 16) -> ProcessSummary:
                 db_path, action_id=action_id, now_iso=_iso(_utc_now())
             )
             summary.done += 1
+            record_outbox_action(action_type, "done")
             logger.info(
                 _stable_json(
                     {
@@ -186,8 +215,10 @@ def process_due(db_path: str, *, batch: int = 16) -> ProcessSummary:
             )
             if is_final:
                 summary.failed_final += 1
+                record_outbox_action(action_type, "failed")
             else:
                 summary.failed_retry += 1
+                record_outbox_action(action_type, "retry")
             summary.errors.append(f"{action_type}:{e}")
             logger.warning(
                 _stable_json(

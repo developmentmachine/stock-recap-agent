@@ -127,6 +127,14 @@ class Settings(BaseSettings):
         alias="RECAP_TOOL_AUDIT_ENABLED",
         description="是否将每次工具调用（成功/失败/拒绝/超时）落库 tool_invocations 表",
     )
+    recap_audit_enabled: bool = Field(
+        default=True,
+        alias="RECAP_AUDIT_ENABLED",
+        description=(
+            "是否将每次 generate 的完整 messages + recap JSON 落库 recap_audit 表，"
+            "用于 replay/合规复审；与 recap_runs 分离，可独立 TTL 归档。"
+        ),
+    )
     principal_role: str = Field(
         default="user",
         alias="RECAP_PRINCIPAL_ROLE",

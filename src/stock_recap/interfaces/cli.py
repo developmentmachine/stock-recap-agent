@@ -43,16 +43,17 @@ from stock_recap.config.settings import Settings, get_settings
 
 
 def _setup_logger(level: str) -> logging.Logger:
-    logger = logging.getLogger("stock_recap")
-    if logger.handlers:
-        return logger
-    logger.setLevel(getattr(logging, level.upper(), logging.INFO))
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S")
+    """CLI 入口走统一的 JSON 结构化日志（带 trace_id/request_id 注入）。
+
+    保留旧函数名 + 返回 ``stock_recap`` logger 仅是为了对调用方零侵入。
+    """
+    from stock_recap.observability.logging_setup import setup_structured_logging
+
+    setup_structured_logging(
+        level=getattr(logging, level.upper(), logging.INFO),
+        stream=sys.stderr,
     )
-    logger.addHandler(handler)
-    return logger
+    return logging.getLogger("stock_recap")
 
 
 def _stable_json(obj: Any) -> str:

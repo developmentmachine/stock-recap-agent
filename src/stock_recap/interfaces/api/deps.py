@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -15,6 +16,11 @@ from typing import Any, Deque, Dict, Optional
 from fastapi import Depends, Header, HTTPException, Request
 
 from stock_recap.config.settings import Settings, get_settings
+from stock_recap.domain.principal import (
+    PrincipalContext,
+    current_principal,
+    set_principal,
+)
 
 logger = logging.getLogger("stock_recap.interfaces.api.deps")
 
@@ -73,15 +79,82 @@ def _reset_limiter_for_tests() -> None:
 
 # ─── 依赖注入函数 ──────────────────────────────────────────────────────────────
 
+def _hash_api_key(api_key: str) -> str:
+    """SHA-256 摘要，用于与 ``tenants.api_key_hash`` 比对（原始 key 不落库）。"""
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+
 def require_api_key(
+    request: Request,
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
     settings: Settings = Depends(get_settings),
-) -> None:
-    """X-API-Key 鉴权：未配置 ``RECAP_API_KEY`` 时放行（便于本地开发）。"""
-    if not settings.recap_api_key:
-        return
-    if not x_api_key or x_api_key != settings.recap_api_key:
-        raise HTTPException(status_code=401, detail="unauthorized")
+) -> PrincipalContext:
+    """X-API-Key 鉴权 + 多租户身份解析（W5-2）。
+
+    决策顺序：
+    1. ``tenants`` 表非空 → 严格走多租户：必须命中 active 租户，否则 401；
+    2. ``RECAP_API_KEY`` 设置 → 单租户固定 key；
+    3. 都没设 → 本地开发匿名放行（写匿名 PrincipalContext）。
+
+    无论哪条路径，都会把当前 ``PrincipalContext`` 写入 ``current_principal``
+    ContextVar，供下游 ``ToolPolicy`` / 持久化层使用。
+    """
+    source = request.client.host if request.client else None
+
+    # 多租户：tenants 表存在数据时优先
+    try:
+        from stock_recap.infrastructure.persistence.db import (
+            count_tenants,
+            load_tenant_by_api_key_hash,
+        )
+
+        if count_tenants(settings.db_path, status="active") > 0:
+            if not x_api_key:
+                raise HTTPException(status_code=401, detail="unauthorized")
+            digest = _hash_api_key(x_api_key)
+            tenant = load_tenant_by_api_key_hash(
+                settings.db_path, api_key_hash=digest
+            )
+            if tenant is None:
+                raise HTTPException(status_code=401, detail="unauthorized")
+            principal = PrincipalContext(
+                tenant_id=str(tenant["tenant_id"]),
+                role=str(tenant.get("role") or "user"),
+                api_key_hash=digest[:12],
+                source=source,
+            )
+            set_principal(principal)
+            return principal
+    except HTTPException:
+        raise
+    except Exception as e:
+        # tenants 表不存在或查询异常：降级为单租户/匿名，记一条日志
+        logger.warning(
+            stable_json({"event": "tenants_lookup_failed", "error": str(e)})
+        )
+
+    # 单租户固定 key
+    if settings.recap_api_key:
+        if not x_api_key or x_api_key != settings.recap_api_key:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        principal = PrincipalContext(
+            tenant_id=None,
+            role=settings.principal_role or "user",
+            api_key_hash=_hash_api_key(x_api_key)[:12],
+            source=source,
+        )
+        set_principal(principal)
+        return principal
+
+    # 本地开发：匿名（不强制 key）
+    principal = PrincipalContext(
+        tenant_id=None,
+        role=settings.principal_role or "user",
+        api_key_hash=None,
+        source=source,
+    )
+    set_principal(principal)
+    return principal
 
 
 def require_rate_limit(
