@@ -38,6 +38,8 @@ def validate_generate_request(req: GenerateRequest) -> None:
             raise GuardrailError("date 必须为 YYYY-MM-DD")
     if req.model is not None and len(req.model) > 256:
         raise GuardrailError("model 表达过长")
+    if req.provider and len(req.provider) > 64:
+        raise GuardrailError("provider id 过长（最多 64 字符）")
 
 
 def validate_feedback_request(req: FeedbackRequest) -> None:

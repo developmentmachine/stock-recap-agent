@@ -31,6 +31,7 @@ from stock_recap.domain.principal import PrincipalContext, get_principal
 from stock_recap.domain.run_context import RunContext
 from stock_recap.infrastructure.persistence.db import (
     insert_job,
+    list_jobs,
     load_job,
     load_job_by_idem,
     mark_job_done,
@@ -165,8 +166,9 @@ def run_recap_job(
 
     update_job_running(settings.db_path, job_id=job_id)
 
-    # 让 worker 内的所有日志/工具调用/审计都带上 job 所属租户身份。
-    from stock_recap.domain.principal import set_principal
+    # 让 worker 内的日志 / 工具 / 持久化读到正确的 principal + RunContext；
+    # 结束后必须 reset principal，避免 BackgroundTasks 污染后续 HTTP 请求。
+    from stock_recap.domain.principal import current_principal, set_principal
 
     effective_principal = principal or PrincipalContext(
         tenant_id=job.get("tenant_id"),
@@ -174,7 +176,7 @@ def run_recap_job(
         api_key_hash=None,
         source="job-worker",
     )
-    set_principal(effective_principal)
+    principal_token = set_principal(effective_principal)
 
     ctx = RunContext.new(session_id=session_id, tenant_id=job.get("tenant_id"))
     prev_ctx = current_run_context.get()
@@ -209,6 +211,10 @@ def run_recap_job(
         )
     finally:
         current_run_context.set(prev_ctx)
+        try:
+            current_principal.reset(principal_token)
+        except Exception:
+            pass
 
 
 def get_job(
@@ -222,6 +228,23 @@ def get_job(
     if job is None:
         return None
     return _project_job(job)
+
+
+def list_jobs_for_api(
+    settings: Settings,
+    *,
+    tenant_id: Optional[str],
+    status: Optional[str] = None,
+    limit: int = 50,
+) -> list[Dict[str, Any]]:
+    """与 ``GET /v1/jobs`` 对齐：同租户列表 + 字段投影。"""
+    rows = list_jobs(
+        settings.db_path,
+        tenant_id=tenant_id,
+        status=status,
+        limit=limit,
+    )
+    return [_project_job(r) for r in rows]
 
 
 def _project_job(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -245,6 +268,7 @@ def _project_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
 __all__ = [
     "get_job",
+    "list_jobs_for_api",
     "run_recap_job",
     "submit_recap_job",
 ]

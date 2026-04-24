@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 
 # ─── 类型别名 ──────────────────────────────────────────────────────────────────
 Mode = Literal["daily", "strategy"]
-Provider = Literal["mock", "live"]
+# 行情采集源：内置 mock / live / akshare；可通过 DataProviderRegistry 注册任意 id。
+Provider = str
 LlmBackend = Literal["openai", "ollama", "cursor-cli", "gemini-cli"]
 
 

@@ -1,0 +1,13 @@
+{
+  "bundle_version": "9.9.9-test",
+  "mode_to_skill_id": {
+    "strategy": "ep.strategy_skill"
+  },
+  "skills": [
+    {
+      "id": "ep.strategy_skill",
+      "path": "strategy_plugin/SKILL.md",
+      "description": "entry point 测试用 skill"
+    }
+  ]
+}

@@ -99,6 +99,14 @@ class Settings(BaseSettings):
         alias="RECAP_SKILL_ID",
         description="覆盖 manifest 的 mode→skill 映射，用于 A/B 或临时切 skill",
     )
+    skill_extra_dirs: Optional[str] = Field(
+        default=None,
+        alias="RECAP_SKILL_EXTRA_DIRS",
+        description=(
+            "逗号分隔的额外 skill bundle 根目录；每个目录须含 manifest.json，"
+            "与内置 manifest 合并（后写覆盖同 id / 同 mode 映射）。"
+        ),
+    )
 
     # 观测
     log_level: str = Field(default="INFO", alias="RECAP_LOG_LEVEL")

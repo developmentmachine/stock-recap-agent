@@ -13,18 +13,26 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 
-from stock_recap.application.jobs import get_job, run_recap_job, submit_recap_job
+from stock_recap.application.jobs import (
+    get_job,
+    list_jobs_for_api,
+    run_recap_job,
+    submit_recap_job,
+)
 from stock_recap.config.settings import Settings, get_settings
 from stock_recap.domain.models import GenerateRequest
 from stock_recap.domain.principal import PrincipalContext
-from stock_recap.infrastructure.persistence.db import init_db, list_jobs
-from stock_recap.interfaces.api.deps import require_api_key
+from stock_recap.infrastructure.persistence.db import init_db
+from stock_recap.interfaces.api.deps import require_api_key, require_rate_limit
 from stock_recap.policy.guardrails import GuardrailError, validate_generate_request
 
 router = APIRouter(tags=["jobs"])
 
 
-@router.post("/v1/jobs")
+@router.post(
+    "/v1/jobs",
+    dependencies=[Depends(require_rate_limit)],
+)
 def api_jobs_submit(
     req: GenerateRequest,
     background_tasks: BackgroundTasks,
@@ -39,12 +47,14 @@ def api_jobs_submit(
     except GuardrailError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
+    idem = (x_idempotency_key or "").strip() or None
+
     init_db(settings.db_path)
     submission = submit_recap_job(
         req,
         settings,
         principal=principal,
-        idempotency_key=x_idempotency_key,
+        idempotency_key=idem,
         session_id=x_session_id,
     )
 
@@ -82,8 +92,8 @@ def api_jobs_list(
     principal: PrincipalContext = Depends(require_api_key),
 ) -> Dict[str, Any]:
     init_db(settings.db_path)
-    items = list_jobs(
-        settings.db_path,
+    items = list_jobs_for_api(
+        settings,
         tenant_id=principal.tenant_id,
         status=status,
         limit=int(max(1, min(limit, 200))),

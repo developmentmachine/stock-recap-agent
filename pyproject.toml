@@ -32,6 +32,9 @@ packages = ["src/stock_recap"]
 [tool.hatch.build.targets.wheel.force-include]
 "src/stock_recap/policy/rules.yaml" = "stock_recap/policy/rules.yaml"
 
+# 下游包可扩展 Skills：在 wheel 的 pyproject 中声明
+#   [project.entry-points."stock_recap.skills"]
+#   acme = "acme_recap_skills:bundle_root"   # Path | str | () -> Path | str
 [project.scripts]
 stock-recap-mcp = "stock_recap.interfaces.mcp_stdio:main"
 

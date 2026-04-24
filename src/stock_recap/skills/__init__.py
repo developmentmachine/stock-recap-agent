@@ -9,7 +9,9 @@ Agent Skills 包（业界常见「manifest + SKILL.md」形态）。
 
 from stock_recap.skills.loader import (
     SkillDocument,
+    clear_skill_manifest_cache,
     list_registered_skills,
+    list_skill_bundle_roots_resolved,
     load_skill_document,
     load_skill_overlay_for_mode,
     resolve_skill_id_for_mode,
@@ -18,7 +20,9 @@ from stock_recap.skills.loader import (
 
 __all__ = [
     "SkillDocument",
+    "clear_skill_manifest_cache",
     "list_registered_skills",
+    "list_skill_bundle_roots_resolved",
     "load_skill_document",
     "load_skill_overlay_for_mode",
     "resolve_skill_id_for_mode",

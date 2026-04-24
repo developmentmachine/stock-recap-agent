@@ -115,7 +115,13 @@ def cli_main() -> int:
 
     # 生成参数
     parser.add_argument("--mode", choices=["daily", "strategy"], default="daily")
-    parser.add_argument("--provider", choices=["live", "mock"], default="live")
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default="live",
+        metavar="ID",
+        help="行情采集源：mock / live / akshare，或已注册的自定义 id",
+    )
     parser.add_argument("--date", type=str, default=None, help="YYYY-MM-DD，默认今天")
     parser.add_argument("--no-llm", action="store_true", help="不调用 LLM，仅采集+落库")
     parser.add_argument(
@@ -152,6 +158,16 @@ def cli_main() -> int:
     parser.add_argument("--limit", type=int, default=10, help="历史记录数量")
 
     args = parser.parse_args()
+
+    from stock_recap.infrastructure.data.collector import list_data_provider_ids
+
+    _pid = (args.provider or "").strip().lower()
+    _allowed = set(list_data_provider_ids())
+    if _pid not in _allowed:
+        parser.error(
+            f"未知 --provider {args.provider!r}；可用: {', '.join(sorted(_allowed))}"
+        )
+    args.provider = _pid
 
     # ── 初始化 ──────────────────────────────────────────────────────────────────
     settings = get_settings()
