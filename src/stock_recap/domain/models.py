@@ -77,6 +77,55 @@ class Features(BaseModel):
     macro_view: str = ""
 
 
+# ─── 日终复盘：结构化事实层（与 narrative sections 并行，便于下游消费 / 向量实体锚定） ─
+IndexDirection = Literal["up", "down", "flat", "unknown"]
+
+
+class NamedIndexRef(BaseModel):
+    """正文/ bullets 中实际引用到的指数条目。"""
+
+    name: str = Field(description="指数名称，须与 snapshot.a_share_indices 下某键一致或为其简称")
+    direction: IndexDirection = Field(
+        default="unknown", description="相对前一交易日的涨跌方向（仅基于输入数字）"
+    )
+    pct_change: Optional[float] = Field(
+        default=None, description="涨跌幅数值（若 snapshot 提供）"
+    )
+    evidence_path: str = Field(
+        default="",
+        description="指向 snapshot 的路径 token，如 a_share_indices.上证指数",
+    )
+
+
+SectorHighlightSide = Literal["strong", "weak", "neutral"]
+
+
+class HighlightedSector(BaseModel):
+    name: str = Field(description="板块或概念名称，须可在 snapshot.sector_performance 等字段中核对")
+    side: SectorHighlightSide = Field(
+        default="strong", description="强势 / 弱势 / 中性归类"
+    )
+    pct_change: Optional[float] = Field(default=None, description="当日涨跌幅（若有）")
+    evidence_path: str = Field(
+        default="",
+        description="如 sector_performance.涨幅前10[0] 或概念层路径，便于审计",
+    )
+
+
+DailyEventKind = Literal[
+    "catalyst", "risk", "liquidity", "overseas", "policy", "sentiment", "other"
+]
+
+
+class DailyMarketEvent(BaseModel):
+    title: str = Field(description="一句话概括事件/催化/风险点")
+    kind: DailyEventKind = Field(default="other")
+    evidence_paths: List[str] = Field(
+        default_factory=list,
+        description="1～3 条 snapshot 路径，证明该事件来自输入数据而非外推",
+    )
+
+
 # ─── 复盘输出结构 ───────────────────────────────────────────────────────────────
 class RecapDailySection(BaseModel):
     title: str = Field(
@@ -102,6 +151,18 @@ class RecapDaily(BaseModel):
     mode: Literal["daily"]
     date: str
     sections: List[RecapDailySection] = Field(min_length=3, max_length=3)
+    highlighted_sectors: List[HighlightedSector] = Field(
+        default_factory=list,
+        description="当日在正文中被强调的行业/概念事实锚点（非全文板块表）",
+    )
+    events: List[DailyMarketEvent] = Field(
+        default_factory=list,
+        description="结构化事件/催化/风险点，须可映射到 snapshot 路径",
+    )
+    named_indices: List[NamedIndexRef] = Field(
+        default_factory=list,
+        description="被点名的主要指数及方向/涨跌，用于 cross-check 与实体记忆",
+    )
     risks: List[str] = Field(default_factory=list)
     closing_summary: str = Field(
         default="",
@@ -157,6 +218,10 @@ class BacktestResult(BaseModel):
     hit_count: int = Field(description="命中数量")
     hit_rate: float = Field(description="命中率 0-1")
     detail: str = Field(description="命中情况说明")
+    scoring_impl: str = Field(
+        default="keyword_substring",
+        description="使用的回测评分器 id（与 BacktestStrategy 注册名一致）",
+    )
 
 
 # ─── API 请求/响应 ─────────────────────────────────────────────────────────────
@@ -191,6 +256,10 @@ class GenerateResponse(BaseModel):
     )
     eval: Dict[str, Any] = Field(default_factory=dict)
     memory_used: List[Dict[str, Any]] = Field(default_factory=list)
+    memory_recall: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="分层记忆元数据：短期 runs + 向量召回统计等",
+    )
     push_result: Optional[bool] = Field(
         default=None, description="推送结果（True=成功，False=失败，None=未推送）"
     )

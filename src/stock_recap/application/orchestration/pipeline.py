@@ -17,6 +17,10 @@ from stock_recap.application.memory.manager import (
     load_evolution_guidance,
     load_recent_memory,
 )
+from stock_recap.application.memory.vector_ops import (
+    index_recap_for_memory,
+    recall_vector_memory,
+)
 from stock_recap.application.orchestration.context import RecapAgentRunState
 from stock_recap.domain.models import (
     GenerateResponse,
@@ -114,6 +118,17 @@ def _phase_recall(state: RecapAgentRunState, tracer: Any) -> None:
 
         state.prompt_version = get_prompt_version(settings.db_path)
 
+        long_m, ent_m, vec_meta = recall_vector_memory(
+            settings,
+            tenant_id=tenant_id,
+            mode=req.mode,
+            snapshot=state.snapshot,
+            features=state.features,
+        )
+        state.memory_long = long_m
+        state.memory_entities = ent_m
+        state.memory_recall_meta = vec_meta
+
         # 实验分桶：用 session_id 优先（同一用户黏性），其次 request_id（一次性）。
         # 命中后 prompt_version 被 variant 绑定的版本覆盖，但活跃全局版本仍记 trace。
         stickiness = state.run_ctx.session_id or state.run_ctx.request_id
@@ -147,6 +162,8 @@ def _phase_plan(state: RecapAgentRunState, tracer: Any) -> None:
                 snapshot=state.snapshot,
                 features=state.features,
                 memory=state.memory,
+                memory_long=state.memory_long,
+                memory_entities=state.memory_entities,
                 prompt_version=state.prompt_version,
                 evolution_guidance=state.evolution_guidance,
                 feedback_summary=state.feedback_summary,
@@ -335,6 +352,27 @@ def _phase_persist(state: RecapAgentRunState, tracer: Any) -> None:
                 )
 
 
+def _phase_index_memory(state: RecapAgentRunState, tracer: Any) -> None:
+    """将本次 recap 写入向量库（可选；未配置 Qdrant/OpenAI 时跳过）。"""
+    req = state.request
+    run_ctx = state.run_ctx
+    with _span_phase(tracer, "recap.agent.index_memory", {"agent.phase": "index_memory"}):
+        if state.recap is None:
+            return
+        try:
+            index_recap_for_memory(
+                state.settings,
+                tenant_id=run_ctx.tenant_id,
+                request_id=run_ctx.request_id,
+                mode=req.mode,
+                recap=state.recap,
+            )
+        except Exception as e:
+            logger.warning(
+                _stable_json({"event": "index_memory_phase_failed", "error": str(e)})
+            )
+
+
 def _phase_reflect(state: RecapAgentRunState, tracer: Any) -> None:
     req = state.request
     settings = state.settings
@@ -389,6 +427,7 @@ _PHASE_ORDER: Tuple[Tuple[PhaseName, Callable[[RecapAgentRunState, Any], None]],
     ("act", _phase_act),
     ("critique", _phase_critique),
     ("persist", _phase_persist),
+    ("index_memory", _phase_index_memory),
     ("reflect", _phase_reflect),
 )
 
@@ -415,6 +454,12 @@ def _build_generate_response(state: RecapAgentRunState) -> GenerateResponse:
             {"date": m.get("date"), "prompt_version": m.get("prompt_version")}
             for m in state.memory
         ],
+        memory_recall={
+            **(state.memory_recall_meta or {}),
+            "short_term_run_count": len(state.memory or []),
+            "long_term_block_count": len(state.memory_long or []),
+            "entity_block_count": len(state.memory_entities or []),
+        },
         push_result=state.push_result,
     )
 
@@ -488,8 +533,8 @@ def _record_run_outcome(state: RecapAgentRunState) -> None:
 def _run_all_phases(state: RecapAgentRunState, tracer: Any) -> GenerateResponse:
     for name, fn in _PHASE_ORDER:
         ok = _check_budget_between_phases(state, name)
-        if not ok and name in {"act", "critique"}:
-            # 跳过 LLM 与评测，但 persist/reflect 仍执行
+        if not ok and name in {"act", "critique", "index_memory"}:
+            # 跳过 LLM、评测与向量索引；persist/reflect 仍执行
             continue
         _run_phase_with_metrics(state, tracer, name, fn)
     _finalize_span_attributes(state)
@@ -531,7 +576,7 @@ def iter_recap_agent_ndjson(state: RecapAgentRunState) -> Iterator[str]:
         for name, fn in _PHASE_ORDER:
             last_phase = name
             ok = _check_budget_between_phases(state, name)
-            if not ok and name in {"act", "critique"}:
+            if not ok and name in {"act", "critique", "index_memory"}:
                 yield _ndjson_line(
                     "phase",
                     phase=name,

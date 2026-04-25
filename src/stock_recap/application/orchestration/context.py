@@ -26,6 +26,9 @@ class RecapAgentRunState:
     snapshot: Optional[MarketSnapshot] = None
     features: Optional[Features] = None
     memory: List[Dict[str, Any]] = field(default_factory=list)
+    memory_long: List[Dict[str, Any]] = field(default_factory=list)
+    memory_entities: List[Dict[str, Any]] = field(default_factory=list)
+    memory_recall_meta: Dict[str, Any] = field(default_factory=dict)
     evolution_guidance: Optional[str] = None
     feedback_summary: Optional[Dict[str, Any]] = None
     pattern_summary: Optional[str] = None

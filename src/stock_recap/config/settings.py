@@ -94,6 +94,42 @@ class Settings(BaseSettings):
     pattern_extraction_days: int = Field(
         default=10, alias="RECAP_PATTERN_EXTRACTION_DAYS"
     )
+
+    # 向量记忆（Qdrant + OpenAI embeddings；未配置 URL 或 API key 时自动跳过）
+    qdrant_url: Optional[str] = Field(
+        default=None,
+        alias="RECAP_QDRANT_URL",
+        description="Qdrant HTTP/gRPC URL，如 http://127.0.0.1:6333；空则关闭向量写入/召回",
+    )
+    qdrant_api_key: Optional[str] = Field(
+        default=None, alias="RECAP_QDRANT_API_KEY", description="远程 Qdrant 可选 API Key"
+    )
+    qdrant_collection: str = Field(
+        default="stock_recap_memory",
+        alias="RECAP_QDRANT_COLLECTION",
+        description="向量集合名；多环境建议按租户/环境拆分",
+    )
+    embedding_model: str = Field(
+        default="text-embedding-3-small",
+        alias="RECAP_EMBEDDING_MODEL",
+        description="OpenAI 嵌入模型 id（需 OPENAI_API_KEY）",
+    )
+    vector_recall_top_k: int = Field(
+        default=5,
+        alias="RECAP_VECTOR_RECALL_TOP_K",
+        description="长记忆向量召回条数上限",
+    )
+    vector_entity_top_k: int = Field(
+        default=5,
+        alias="RECAP_VECTOR_ENTITY_TOP_K",
+        description="实体记忆向量召回条数上限",
+    )
+    backtest_scoring: str = Field(
+        default="keyword_substring",
+        alias="RECAP_BACKTEST_SCORING",
+        description="回测评分器：keyword_substring | normalized_overlap",
+    )
+
     skill_id_override: Optional[str] = Field(
         default=None,
         alias="RECAP_SKILL_ID",

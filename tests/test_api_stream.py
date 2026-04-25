@@ -37,7 +37,16 @@ def test_recap_stream_ndjson_phases_and_result(client: TestClient) -> None:
     assert events[0]["event"] == "meta"
     assert events[0]["mode"] == "daily"
     phases = [e["phase"] for e in events[1:-1] if e.get("event") == "phase"]
-    assert phases == ["perceive", "recall", "plan", "act", "critique", "persist", "reflect"]
+    assert phases == [
+        "perceive",
+        "recall",
+        "plan",
+        "act",
+        "critique",
+        "persist",
+        "index_memory",
+        "reflect",
+    ]
     last = events[-1]
     assert last["event"] == "result"
     assert last["http_status"] == 200

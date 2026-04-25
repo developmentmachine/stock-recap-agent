@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 from typing import Any, Dict, List, Optional
 
 from stock_recap.domain.models import (
@@ -124,51 +123,18 @@ def compute_backtest(
     strategy_recap: RecapStrategy,
     actual_date: str,
     actual_snapshot: MarketSnapshot,
+    *,
+    scoring_impl: Optional[str] = None,
 ) -> BacktestResult:
-    """对比策略预测的主线方向与实际板块涨幅，计算命中率。"""
-    predicted = strategy_recap.mainline_focus  # 如 ["新能源", "半导体"]
+    """对比策略预测与实际板块表现；评分器由 ``RECAP_BACKTEST_SCORING`` 或参数选择。"""
+    from stock_recap.application.backtest.registry import resolve_backtest_strategy
+    from stock_recap.config.settings import get_settings
 
-    # 从 actual_snapshot 提取实际涨幅前 10 板块名称
-    sp = actual_snapshot.sector_performance or {}
-    top_list: List[str] = []
-    for item in sp.get("涨幅前10", []):
-        name = item.get("板块名称") or item.get("name") or ""
-        if name:
-            top_list.append(name)
-
-    if not top_list:
-        return BacktestResult(
-            strategy_date=strategy_date,
-            actual_date=actual_date,
-            predicted_sectors=predicted,
-            actual_top_sectors=[],
-            hit_count=0,
-            hit_rate=0.0,
-            detail="实际板块数据不足，无法回测",
-        )
-
-    # 简单关键词匹配（预测词出现在实际板块名中）
-    hit_count = 0
-    hit_detail: List[str] = []
-    for pred in predicted:
-        # 提取核心词（去掉"板块"/"行业"等后缀）
-        core = pred.replace("板块", "").replace("行业", "").replace("概念", "").strip()
-        matched = [act for act in top_list if core in act or act in core]
-        if matched:
-            hit_count += 1
-            hit_detail.append(f"✓ {pred} → {matched[0]}")
-        else:
-            hit_detail.append(f"✗ {pred}")
-
-    hit_rate = hit_count / len(predicted) if predicted else 0.0
-    detail = f"预测 {len(predicted)} 个方向，命中 {hit_count} 个（{hit_rate:.0%}）\n" + "\n".join(hit_detail)
-
-    return BacktestResult(
+    name = (scoring_impl or get_settings().backtest_scoring or "keyword_substring").strip().lower()
+    strat = resolve_backtest_strategy(name)
+    return strat.evaluate(
         strategy_date=strategy_date,
+        strategy_recap=strategy_recap,
         actual_date=actual_date,
-        predicted_sectors=predicted,
-        actual_top_sectors=top_list,
-        hit_count=hit_count,
-        hit_rate=round(hit_rate, 3),
-        detail=detail,
+        actual_snapshot=actual_snapshot,
     )

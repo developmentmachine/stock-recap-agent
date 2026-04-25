@@ -136,6 +136,7 @@ def init_db(db_path: str) -> None:
               predicted_sectors_json TEXT NOT NULL,
               actual_top_sectors_json TEXT NOT NULL,
               detail TEXT,
+              scoring_impl TEXT NOT NULL DEFAULT 'keyword_substring',
               created_at TEXT NOT NULL
             );
 
@@ -390,6 +391,7 @@ def init_db(db_path: str) -> None:
     _safe_add_column(db_path, "recap_feedback", "tenant_id", "TEXT")
     _safe_add_column(db_path, "tool_invocations", "tenant_id", "TEXT")
     _safe_add_column(db_path, "pending_actions", "tenant_id", "TEXT")
+    _safe_add_column(db_path, "backtest_results", "scoring_impl", "TEXT")
 
 
 def _safe_add_column(db_path: str, table: str, column: str, col_type: str) -> None:
@@ -696,8 +698,8 @@ def insert_backtest(
             """
             INSERT OR REPLACE INTO backtest_results
               (strategy_date, actual_date, hit_count, hit_rate,
-               predicted_sectors_json, actual_top_sectors_json, detail, created_at)
-            VALUES (?,?,?,?,?,?,?,?)
+               predicted_sectors_json, actual_top_sectors_json, detail, scoring_impl, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
             """,
             (
                 result.strategy_date,
@@ -707,6 +709,7 @@ def insert_backtest(
                 _stable_json(result.predicted_sectors),
                 _stable_json(result.actual_top_sectors),
                 result.detail,
+                result.scoring_impl,
                 created_at,
             ),
         )
@@ -716,7 +719,7 @@ def load_recent_backtests(db_path: str, limit: int = 10) -> List[Dict[str, Any]]
     with get_conn(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT strategy_date, actual_date, hit_count, hit_rate, detail, created_at
+            SELECT strategy_date, actual_date, hit_count, hit_rate, detail, scoring_impl, created_at
             FROM backtest_results
             ORDER BY actual_date DESC
             LIMIT ?

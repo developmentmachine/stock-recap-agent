@@ -150,6 +150,11 @@ def _llm_data_coverage(snapshot: MarketSnapshot) -> Dict[str, Any]:
             "  · 严格禁止使用『暂无 / 数据缺失 / 难以判断』等遁词；某项 flag 为假时直接跳过该项即可。"
             "禁止北向、沪深港通、外资通道等任何表述。"
             "若 forward_watchlist 为真：第二大类末尾或独立 bullet 必须新增『明日观察』一条，仅引用 snapshot.forward_watchlist.高确信候选 中 score ≥2 的 1～3 只个股（写出名称 + reasons 中前 2 条因子链），与 snapshot.forward_watchlist.板块_涨幅与资金双重确认 中 1～2 个板块；该条须明确标注『次日观察 / 非买入建议』，禁止给出价位或仓位。"
+            "【事实层 JSON 字段】除 sections/risks/closing_summary 外，必须输出："
+            "``named_indices``（正文引用到的主要指数，含 direction/pct_change/evidence_path）、"
+            "``highlighted_sectors``（强调板块/概念，含 side/pct_change/evidence_path）、"
+            "``events``（1～5 条结构化事件/催化/风险，kind 取值 catalyst|risk|liquidity|overseas|policy|sentiment|other，evidence_paths 为 1～3 条 snapshot 路径 token）。"
+            "evidence_path 使用点号路径且不含 ``snapshot.`` 前缀，如 ``a_share_indices.上证指数``、``sector_performance.涨幅前10[0]``；不得编造输入中不存在的路径。"
             "第三大类（外部与风险偏好）：仅依据 us_market（含 etf参考 若 us_etf_proxies 为真，含 movers.mag7 / movers.中概股_adr 若对应 flag 为真）、commodities、futures_block、以及 cross_market（若 cross_market 为真）；"
             "若 us_mag7 为真：必须点到至少 2 只 Mag7 个股的涨跌方向，写清美股内部分化（不要只复述三大指数）；"
             "若 us_china_adr 为真：必须用中概 ADR（如阿里、拼多多、京东、蔚来等）写出『海外投资者对中国资产』当日态度；"
@@ -242,6 +247,8 @@ def build_user_prompt(
     prompt_version: str,
     backtest_context: Optional[str] = None,
     pattern_summary: Optional[str] = None,
+    memory_long: Optional[List[Dict[str, Any]]] = None,
+    memory_entities: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     payload: Dict[str, Any] = {
         "prompt_version": prompt_version,
@@ -256,6 +263,10 @@ def build_user_prompt(
             else RecapStrategy.model_json_schema()
         ),
     }
+    if memory_long:
+        payload["memory_long_term_vector"] = memory_long
+    if memory_entities:
+        payload["memory_entity_vector"] = memory_entities
     if mode == "daily":
         payload["data_coverage"] = _llm_data_coverage(snapshot)
     elif mode == "strategy":
@@ -281,6 +292,8 @@ def build_messages(
     backtest_context: Optional[str] = None,
     pattern_summary: Optional[str] = None,
     skill_id_override: Optional[str] = None,
+    memory_long: Optional[List[Dict[str, Any]]] = None,
+    memory_entities: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, str]]:
     schema = (
         RecapDaily.model_json_schema()
@@ -308,6 +321,8 @@ def build_messages(
                 prompt_version=prompt_version,
                 backtest_context=backtest_context,
                 pattern_summary=pattern_summary,
+                memory_long=memory_long,
+                memory_entities=memory_entities,
             ),
         },
         {

@@ -35,6 +35,38 @@ def daily_headline_and_bullet_matrix(recap: RecapDaily) -> tuple[str, list[list[
     return headline, matrix
 
 
+def _append_daily_structured_facts_md(lines: list[str], recap: RecapDaily) -> None:
+    if not (recap.named_indices or recap.highlighted_sectors or recap.events):
+        return
+    lines.append("## 结构化事实（供引用核对）")
+    lines.append("")
+    if recap.named_indices:
+        lines.append("**主要指数**")
+        for it in recap.named_indices:
+            extra = []
+            if it.direction and it.direction != "unknown":
+                extra.append(f"方向={it.direction}")
+            if it.pct_change is not None:
+                extra.append(f"涨跌={it.pct_change}%")
+            suf = f"（{', '.join(extra)}）" if extra else ""
+            ev = f" `{it.evidence_path}`" if it.evidence_path else ""
+            lines.append(f"- {it.name}{suf}{ev}")
+        lines.append("")
+    if recap.highlighted_sectors:
+        lines.append("**强调板块**")
+        for h in recap.highlighted_sectors:
+            ev = f" `{h.evidence_path}`" if h.evidence_path else ""
+            pc = f" {h.pct_change}%" if h.pct_change is not None else ""
+            lines.append(f"- [{h.side}] {h.name}{pc}{ev}")
+        lines.append("")
+    if recap.events:
+        lines.append("**事件与要点**")
+        for e in recap.events:
+            paths = ", ".join(e.evidence_paths) if e.evidence_paths else ""
+            lines.append(f"- [{e.kind}] {e.title}" + (f" — `{paths}`" if paths else ""))
+        lines.append("")
+
+
 def render_markdown(recap: Recap) -> str:
     if recap.mode == "daily":
         assert isinstance(recap, RecapDaily)
@@ -49,6 +81,7 @@ def render_markdown(recap: Recap) -> str:
             for b in bullet_matrix[i - 1]:
                 lines.append(f"    * {b}")
             lines.append("")
+        _append_daily_structured_facts_md(lines, recap)
         if recap.risks:
             lines.append("## 风险提示")
             lines.append("")
@@ -105,6 +138,15 @@ def render_wechat_text(recap: Recap) -> str:
             out.append("分析：")
             for b in bullet_matrix[i - 1]:
                 out.append(f"  · {b}")
+            out.append("")
+        if recap.named_indices or recap.highlighted_sectors or recap.events:
+            out.append("【结构化事实】")
+            for it in recap.named_indices:
+                out.append(f"  · 指数 {it.name} ({it.direction})")
+            for h in recap.highlighted_sectors:
+                out.append(f"  · 板块 [{h.side}] {h.name}")
+            for e in recap.events:
+                out.append(f"  · [{e.kind}] {e.title}")
             out.append("")
         if recap.risks:
             out.append("【风险提示】")
