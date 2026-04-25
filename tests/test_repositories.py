@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from stock_recap.domain.models import (
+from agent_platform.domain.models import (
     BacktestResult,
     EvolutionNote,
     Features,
@@ -19,7 +19,7 @@ from stock_recap.domain.models import (
     RecapDaily,
     RecapDailySection,
 )
-from stock_recap.domain.repositories import (
+from agent_platform.domain.repositories import (
     BacktestRepository,
     EvolutionRepository,
     ExperimentRepository,
@@ -27,8 +27,8 @@ from stock_recap.domain.repositories import (
     RecapAuditRepository,
     RunRepository,
 )
-from stock_recap.infrastructure.persistence.db import init_db
-from stock_recap.infrastructure.persistence.repositories import (
+from agent_platform.infrastructure.persistence.db import init_db
+from agent_platform.infrastructure.persistence.repositories import (
     Repositories,
     build_default_repositories,
 )

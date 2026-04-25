@@ -7,8 +7,8 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from stock_recap.infrastructure.data.sources.liquidity import fetch_liquidity
-from stock_recap.infrastructure.data.sources.sector_leaders import (
+from agent_platform.infrastructure.data.sources.liquidity import fetch_liquidity
+from agent_platform.infrastructure.data.sources.sector_leaders import (
     _top_strong_industry_names,
     fetch_industry_5d_strength,
     fetch_sector_leaders,
@@ -98,7 +98,7 @@ def test_fetch_industry_5d_strength_with_fake_ak():
 
 def test_extract_market_patterns_skips_non_openai_backend():
     """gemini-cli backend 时不应触发 openai 调用。"""
-    from stock_recap.application.memory.manager import extract_market_patterns
+    from agent_platform.application.memory.manager import extract_market_patterns
 
     settings = SimpleNamespace(
         llm_backend="gemini-cli",
@@ -121,7 +121,7 @@ def test_extract_market_patterns_skips_non_openai_backend():
 
 
 def test_check_and_run_evolution_skips_non_openai_backend():
-    from stock_recap.application.memory.manager import check_and_run_evolution
+    from agent_platform.application.memory.manager import check_and_run_evolution
 
     settings = SimpleNamespace(
         llm_backend="gemini-cli",

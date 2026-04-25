@@ -28,16 +28,17 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/stock_recap"]
+packages = ["src/agent_platform"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"src/stock_recap/policy/rules.yaml" = "stock_recap/policy/rules.yaml"
+"src/agent_platform/policy/rules.yaml" = "agent_platform/policy/rules.yaml"
 
 # 下游包可扩展 Skills：在 wheel 的 pyproject 中声明
-#   [project.entry-points."stock_recap.skills"]
+#   [project.entry-points."agent_platform.skills"]
 #   acme = "acme_recap_skills:bundle_root"   # Path | str | () -> Path | str
 [project.scripts]
-stock-recap-mcp = "stock_recap.interfaces.mcp_stdio:main"
+agent_platform = "agent_platform.interfaces.cli:cli_main"
+stock-recap-mcp = "agent_platform.interfaces.mcp_stdio:main"
 
 [project.optional-dependencies]
 dev = [

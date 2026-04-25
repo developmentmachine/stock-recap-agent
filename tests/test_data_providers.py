@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-from stock_recap.domain.data_providers import DataProviderSpec
-from stock_recap.domain.models import MarketSnapshot
-from stock_recap.infrastructure.data.collector import (
+from agent_platform.domain.data_providers import DataProviderSpec
+from agent_platform.domain.models import MarketSnapshot
+from agent_platform.infrastructure.data.collector import (
     collect_snapshot,
     default_data_provider_registry,
     list_data_provider_ids,

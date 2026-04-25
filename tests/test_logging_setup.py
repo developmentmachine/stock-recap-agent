@@ -17,14 +17,14 @@ from typing import Any, Dict
 
 import pytest
 
-from stock_recap.domain.run_context import RunContext
-from stock_recap.observability.logging_setup import (
+from agent_platform.domain.run_context import RunContext
+from agent_platform.observability.logging_setup import (
     JsonFormatter,
     RunContextFilter,
     reset_structured_logging,
     setup_structured_logging,
 )
-from stock_recap.observability.runtime_context import current_run_context
+from agent_platform.observability.runtime_context import current_run_context
 
 
 @pytest.fixture
@@ -112,7 +112,7 @@ def test_setup_emits_json_to_stream():
         ctx = RunContext.new(mode="strategy", provider="mock")
         token = current_run_context.set(ctx)
         try:
-            logging.getLogger("stock_recap.test").info("setup_check")
+            logging.getLogger("agent_platform.test").info("setup_check")
         finally:
             current_run_context.reset(token)
         rec = json.loads(buf.getvalue().strip().splitlines()[-1])

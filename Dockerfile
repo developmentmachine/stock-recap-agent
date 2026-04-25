@@ -18,4 +18,4 @@ ENV RECAP_LOG_LEVEL=INFO
 
 EXPOSE 8000
 
-CMD ["python", "-m", "stock_recap", "--serve", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["agent_platform", "stock-recap", "--serve", "--host", "0.0.0.0", "--port", "8000"]

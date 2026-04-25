@@ -6,20 +6,20 @@ from typing import Any, Dict
 
 import pytest
 
-from stock_recap.application.orchestration.budget import AgentBudget
-from stock_recap.config.settings import Settings
-from stock_recap.domain.models import LlmBudgetExceeded
-from stock_recap.infrastructure.persistence.db import (
+from agent_platform.application.orchestration.budget import AgentBudget
+from agent_platform.config.settings import Settings
+from agent_platform.domain.models import LlmBudgetExceeded
+from agent_platform.infrastructure.persistence.db import (
     init_db,
     load_recent_tool_invocations,
 )
-from stock_recap.infrastructure.tools import runner as runner_mod
-from stock_recap.infrastructure.tools.runner import RecapToolRunner
-from stock_recap.observability.runtime_context import (
+from agent_platform.infrastructure.tools import runner as runner_mod
+from agent_platform.infrastructure.tools.runner import RecapToolRunner
+from agent_platform.observability.runtime_context import (
     current_budget,
     current_run_context,
 )
-from stock_recap.policy.tools import (
+from agent_platform.policy.tools import (
     ToolBudgetExceeded,
     ToolDisabled,
     ToolForbidden,
@@ -29,7 +29,7 @@ from stock_recap.policy.tools import (
     ToolTimeout,
     build_default_registry,
 )
-from stock_recap.domain.run_context import RunContext
+from agent_platform.domain.run_context import RunContext
 
 
 # ─── fixtures ─────────────────────────────────────────────────────────────────

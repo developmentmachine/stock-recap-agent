@@ -15,18 +15,18 @@ from typing import Dict, List, Tuple
 
 import pytest
 
-from stock_recap.application.orchestration.budget import AgentBudget
-from stock_recap.application.orchestration.context import RecapAgentRunState
-from stock_recap.application.orchestration.pipeline import _check_budget_between_phases
-from stock_recap.config.settings import Settings
-from stock_recap.domain.models import (
+from agent_platform.application.orchestration.budget import AgentBudget
+from agent_platform.application.orchestration.context import RecapAgentRunState
+from agent_platform.application.orchestration.pipeline import _check_budget_between_phases
+from agent_platform.config.settings import Settings
+from agent_platform.domain.models import (
     GenerateRequest,
     LlmBudgetExceeded,
     LlmTokens,
     Recap,
 )
-from stock_recap.domain.run_context import RunContext
-from stock_recap.observability.runtime_context import current_budget
+from agent_platform.domain.run_context import RunContext
+from agent_platform.observability.runtime_context import current_budget
 
 
 _ENV_KEYS = {
@@ -97,8 +97,8 @@ def test_wall_ms_exceed_after_sleep_simulated() -> None:
 
 
 def test_tool_runner_increments_via_contextvar(monkeypatch: pytest.MonkeyPatch) -> None:
-    from stock_recap.infrastructure.tools import runner as runner_mod
-    from stock_recap.infrastructure.tools.runner import RecapToolRunner
+    from agent_platform.infrastructure.tools import runner as runner_mod
+    from agent_platform.infrastructure.tools.runner import RecapToolRunner
 
     monkeypatch.setattr(
         runner_mod, "execute_tool", lambda name, arguments, db_path=":memory:": "ok"
@@ -139,8 +139,8 @@ def test_check_budget_between_phases_skips_act_and_critique(
 
 def test_act_phase_handles_budget_exceeded_gracefully(monkeypatch: pytest.MonkeyPatch) -> None:
     """provider 抛 ``LlmBudgetExceeded`` 时 act 节点不应让整个 pipeline 崩。"""
-    from stock_recap.application.orchestration import pipeline as pipeline_mod
-    from stock_recap.infrastructure.llm import backends as backends_mod
+    from agent_platform.application.orchestration import pipeline as pipeline_mod
+    from agent_platform.infrastructure.llm import backends as backends_mod
 
     s = _settings(monkeypatch)
     state = RecapAgentRunState(
@@ -151,7 +151,7 @@ def test_act_phase_handles_budget_exceeded_gracefully(monkeypatch: pytest.Monkey
     )
 
     # 给 act 喂上必要的前置状态
-    from stock_recap.domain.models import Features, MarketSnapshot
+    from agent_platform.domain.models import Features, MarketSnapshot
 
     state.snapshot = MarketSnapshot(
         asof="2024-01-02T00:00:00+00:00", provider="mock", date="2024-01-02"

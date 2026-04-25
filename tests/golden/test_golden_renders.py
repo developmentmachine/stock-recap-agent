@@ -8,12 +8,12 @@
 """
 from __future__ import annotations
 
-from stock_recap.domain.models import (
+from agent_platform.domain.models import (
     RecapDaily,
     RecapDailySection,
     RecapStrategy,
 )
-from stock_recap.presentation.render.renderers import (
+from agent_platform.presentation.render.renderers import (
     render_markdown,
     render_markdown_for_wechat_work,
     render_wechat_text,

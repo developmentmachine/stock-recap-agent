@@ -1,7 +1,7 @@
 import json
 
-from stock_recap.domain.models import Features, MarketSnapshot
-from stock_recap.infrastructure.llm.prompts import build_user_prompt
+from agent_platform.domain.models import Features, MarketSnapshot
+from agent_platform.infrastructure.llm.prompts import build_user_prompt
 
 
 def test_daily_user_prompt_strips_northbound_and_adds_coverage():

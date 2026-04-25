@@ -37,8 +37,8 @@ if [ -n "${date}" ]; then
   DATE_ARG="--date ${date}"
 fi
 
-uv run -m stock_recap --mode $MODE --provider $PROVIDER $DATE_ARG --dry-run 2>/dev/null || \
-uv run -m stock_recap --mode $MODE --provider $PROVIDER $DATE_ARG
+uv run -m agent_platform --mode $MODE --provider $PROVIDER $DATE_ARG --dry-run 2>/dev/null || \
+uv run -m agent_platform --mode $MODE --provider $PROVIDER $DATE_ARG
 ```
 
 执行上述命令后，将输出结果以清晰的格式展示给用户：

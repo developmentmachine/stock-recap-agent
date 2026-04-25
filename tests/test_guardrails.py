@@ -1,13 +1,13 @@
 import pytest
 
-from stock_recap.domain.models import (
+from agent_platform.domain.models import (
     FeedbackRequest,
     GenerateRequest,
     RecapDaily,
     RecapDailySection,
     RecapStrategy,
 )
-from stock_recap.policy.guardrails import (
+from agent_platform.policy.guardrails import (
     GuardrailError,
     coerce_recap_output,
     validate_feedback_request,

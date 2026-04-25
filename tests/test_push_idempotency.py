@@ -5,10 +5,10 @@ from typing import List
 
 import pytest
 
-from stock_recap.application.side_effects import push as push_mod
-from stock_recap.config.settings import Settings
-from stock_recap.domain.models import RecapDaily, RecapDailySection
-from stock_recap.infrastructure.persistence.db import get_push_log, init_db
+from agent_platform.application.side_effects import push as push_mod
+from agent_platform.config.settings import Settings
+from agent_platform.domain.models import RecapDaily, RecapDailySection
+from agent_platform.infrastructure.persistence.db import get_push_log, init_db
 
 
 @pytest.fixture

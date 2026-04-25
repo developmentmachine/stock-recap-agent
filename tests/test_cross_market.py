@@ -1,6 +1,6 @@
 """跨市场 hints 与板块超额工具函数。"""
-from stock_recap.infrastructure.data.sources.cross_market import build_cross_market_hints
-from stock_recap.infrastructure.data.sources.sector import apply_benchmark_excess
+from agent_platform.infrastructure.data.sources.cross_market import build_cross_market_hints
+from agent_platform.infrastructure.data.sources.sector import apply_benchmark_excess
 
 
 def test_apply_benchmark_excess_adds_relative_block():

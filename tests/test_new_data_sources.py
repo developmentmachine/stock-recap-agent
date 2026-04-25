@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from stock_recap.infrastructure.data.sources.cross_market import build_cross_market_hints
-from stock_recap.infrastructure.data.sources.individual_fund_flow import fetch_individual_fund_flow
-from stock_recap.infrastructure.data.sources.limit_up_pool import fetch_limit_up_pool
-from stock_recap.infrastructure.data.sources.sector import EastmoneyPush2BoardsSource
-from stock_recap.infrastructure.data.sources.sector_fund_flow import fetch_sector_fund_flow
-from stock_recap.infrastructure.data.sources.us_movers import _parse_lines
+from agent_platform.infrastructure.data.sources.cross_market import build_cross_market_hints
+from agent_platform.infrastructure.data.sources.individual_fund_flow import fetch_individual_fund_flow
+from agent_platform.infrastructure.data.sources.limit_up_pool import fetch_limit_up_pool
+from agent_platform.infrastructure.data.sources.sector import EastmoneyPush2BoardsSource
+from agent_platform.infrastructure.data.sources.sector_fund_flow import fetch_sector_fund_flow
+from agent_platform.infrastructure.data.sources.us_movers import _parse_lines
 
 
 def test_sector_fund_flow_normalizes(monkeypatch):
@@ -27,7 +27,7 @@ def test_sector_fund_flow_normalizes(monkeypatch):
             return fake_rows_out
         return []
 
-    with patch("stock_recap.infrastructure.data.sources.sector_fund_flow.push2_clist", side_effect=_fake):
+    with patch("agent_platform.infrastructure.data.sources.sector_fund_flow.push2_clist", side_effect=_fake):
         out = fetch_sector_fund_flow(top=5)
     assert "行业" in out
     inflow = out["行业"]["净流入前列"]
@@ -45,7 +45,7 @@ def test_limit_up_pool_aggregates_themes_and_high_tier():
         {"c": "300002", "n": "乙", "lbc": 3, "zttj": {"days": 3, "ct": 3}, "hybk": "半导体", "fund": 0.5e8, "amount": 4e8, "zbc": 0},
         {"c": "002001", "n": "丙", "lbc": 1, "zttj": {"days": 1, "ct": 1}, "hybk": "电池", "fund": 0.3e8, "amount": 2e8, "zbc": 1},
     ]
-    with patch("stock_recap.infrastructure.data.sources.limit_up_pool.push2ex_zt_pool", return_value=fake_pool):
+    with patch("agent_platform.infrastructure.data.sources.limit_up_pool.push2ex_zt_pool", return_value=fake_pool):
         out = fetch_limit_up_pool("20260423")
     assert out["涨停总数"] == 3
     assert out["连板梯队_最高"] == 5
@@ -88,7 +88,7 @@ def test_eastmoney_push2_boards_fallback_returns_industry_and_concept():
             return concept_top
         return []
 
-    with patch("stock_recap.infrastructure.data.sources.sector.push2_clist", side_effect=_fake):
+    with patch("agent_platform.infrastructure.data.sources.sector.push2_clist", side_effect=_fake):
         out = EastmoneyPush2BoardsSource().fetch()
 
     assert out["涨幅前10"][0]["板块名称"] == "半导体"
@@ -111,7 +111,7 @@ def test_individual_fund_flow_normalizes(monkeypatch):
             return inflow
         return outflow
 
-    with patch("stock_recap.infrastructure.data.sources.individual_fund_flow.push2_clist", side_effect=_fake):
+    with patch("agent_platform.infrastructure.data.sources.individual_fund_flow.push2_clist", side_effect=_fake):
         out = fetch_individual_fund_flow(top=5)
     assert out["净流入前列"][0]["股票名称"] == "Mock甲"
     assert out["净流入前列"][0]["主力净流入(亿)"] == 4.8

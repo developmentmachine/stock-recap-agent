@@ -2,13 +2,13 @@
 import json
 import pytest
 
-from stock_recap.infrastructure.llm.backends import (
+from agent_platform.infrastructure.llm.backends import (
     _interpret_model_spec,
     llm_backend_effective,
     model_effective,
     parse_json_from_text,
 )
-from stock_recap.config.settings import Settings
+from agent_platform.config.settings import Settings
 
 
 # ─── _interpret_model_spec ────────────────────────────────────────────────────

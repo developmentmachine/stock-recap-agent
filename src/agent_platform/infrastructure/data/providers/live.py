@@ -1,0 +1,125 @@
+"""Live provider — 与 akshare provider 共用相同 fetcher，额外做严格指数检查。"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Any, Dict, List
+
+from agent_platform.infrastructure.data.sources.indices import make_indices_fetcher
+from agent_platform.infrastructure.data.sources.sentiment import make_sentiment_fetcher
+from agent_platform.infrastructure.data.sources.continuity import fetch_continuity
+from agent_platform.infrastructure.data.sources.cross_market import build_cross_market_hints
+from agent_platform.infrastructure.data.sources.forward_watchlist import build_forward_watchlist
+from agent_platform.infrastructure.data.sources.individual_fund_flow import fetch_individual_fund_flow
+from agent_platform.infrastructure.data.sources.lhb import fetch_lhb
+from agent_platform.infrastructure.data.sources.limit_up_pool import fetch_limit_up_pool
+from agent_platform.infrastructure.data.sources.sector import apply_benchmark_excess, make_sector_fetcher
+from agent_platform.infrastructure.data.sources.sector_fund_flow import fetch_sector_fund_flow
+from agent_platform.infrastructure.data.sources.sector_leaders import (
+    _top_strong_industry_names,
+    fetch_industry_5d_strength,
+    fetch_sector_leaders,
+)
+from agent_platform.infrastructure.data.sources.liquidity import fetch_liquidity
+from agent_platform.infrastructure.data.sources.style_factors import build_style_matrix
+from agent_platform.infrastructure.data.sources.us_movers import fetch_us_movers
+from agent_platform.infrastructure.data.sources.us_market import make_us_market_fetcher
+from agent_platform.infrastructure.data.sources.commodities import make_commodities_fetcher
+from agent_platform.infrastructure.data.sources.hot_rank import make_hot_rank_fetcher
+from agent_platform.infrastructure.data.sources.market_fund_flow import (
+    fetch_market_main_fund_summary,
+)
+from agent_platform.domain.models import MarketSnapshot
+
+logger = logging.getLogger("agent_platform.providers.live")
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def collect_live(ak: Any, d: str, date_short: str, asof: str) -> MarketSnapshot:
+    indices = make_indices_fetcher().fetch()
+
+    # 严格检查：live 模式要求上证指数有实时价格
+    sse = indices.get("上证指数") or {}
+    if not sse.get("最新价"):
+        raise RuntimeError(
+            "严格模式：未能获取上证指数最新价（可能非交易时段或网络故障）。"
+            "请使用 --skip-trading-check 或 --provider akshare。"
+        )
+
+    sentiment = make_sentiment_fetcher(ak, date_short).fetch()
+    hot = make_hot_rank_fetcher(ak).fetch()
+    if hot.get("热度榜前列"):
+        sentiment["热度榜前列"] = hot["热度榜前列"]
+        sentiment["热度榜数据来源"] = hot.get("数据来源", "")
+    sector_raw = make_sector_fetcher(ak).fetch()
+    sector = apply_benchmark_excess(sector_raw, indices)
+    sector_fund_flow = fetch_sector_fund_flow(top=8)
+    individual_flow = fetch_individual_fund_flow(top=10)
+    if individual_flow:
+        sentiment["个股资金流"] = individual_flow
+    limit_up_pool = fetch_limit_up_pool(date_short)
+    us_market_base = make_us_market_fetcher().fetch()
+    us_movers = fetch_us_movers()
+    if us_movers:
+        us_market_base["movers"] = us_movers
+    us_market = us_market_base
+    cross_market = build_cross_market_hints(sector, us_market)
+    commodities = make_commodities_fetcher().fetch()
+
+    # 成交额补充：若情绪数据里没有，从指数口径估算
+    if "两市成交额(亿)" not in sentiment:
+        sh_amt = sse.get("成交额(亿)")
+        sz_amt = (indices.get("深证成指") or {}).get("成交额(亿)")
+        if isinstance(sh_amt, (int, float)) and isinstance(sz_amt, (int, float)):
+            sentiment["两市成交额(亿)"] = round(float(sh_amt) + float(sz_amt), 1)
+            sentiment["两市成交额口径"] = "指数口径估算"
+
+    mf = fetch_market_main_fund_summary(ak, d)
+    if mf:
+        sentiment["大盘主力资金流"] = mf
+
+    continuity = fetch_continuity(date_short, ak=ak)
+    style_matrix = build_style_matrix(indices)
+    lhb_data = fetch_lhb(ak, date_short)
+    liquidity = fetch_liquidity(ak)
+
+    sector_leaders = fetch_sector_leaders(ak, sector or {}, top_industries=3)
+    top_strong_names = _top_strong_industry_names(sector or {}, n=5)
+    sector_5d = fetch_industry_5d_strength(ak, top_strong_names, days=5)
+
+    forward_watchlist = build_forward_watchlist(
+        limit_up_pool=limit_up_pool or {},
+        individual_fund_flow=individual_flow or {},
+        lhb=lhb_data or {},
+        sector_performance=sector or {},
+        sector_fund_flow=sector_fund_flow or {},
+        continuity=continuity or {},
+    )
+
+    return MarketSnapshot(
+        asof=asof,
+        provider="live",
+        date=d,
+        is_trading_day=True,
+        sources=[{"name": "tencent+sina+akshare", "asof": asof}],
+        a_share_indices=indices,
+        market_sentiment=sentiment,
+        northbound_flow={},
+        sector_performance=sector,
+        us_market=us_market,
+        commodities=commodities,
+        futures={},
+        cross_market=cross_market,
+        sector_fund_flow=sector_fund_flow,
+        limit_up_pool=limit_up_pool,
+        continuity=continuity,
+        style_matrix=style_matrix,
+        lhb=lhb_data,
+        forward_watchlist=forward_watchlist,
+        liquidity=liquidity,
+        sector_leaders=sector_leaders,
+        sector_5d_strength=sector_5d,
+    )

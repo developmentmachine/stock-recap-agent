@@ -5,16 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from stock_recap.domain.models import (
+from agent_platform.domain.models import (
     RecapDaily,
     RecapDailySection,
     RecapStrategy,
 )
-from stock_recap.policy.guardrails import (
+from agent_platform.policy.guardrails import (
     coerce_recap_output,
     reset_default_ruleset_cache,
 )
-from stock_recap.policy.output_rules import (
+from agent_platform.policy.output_rules import (
     ConsistencyRule,
     ForbiddenPhraseRule,
     RequirePhraseRule,
@@ -200,7 +200,7 @@ forbidden_phrases:
 
 def test_coerce_falls_back_on_apply_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """apply_rules 抛异常时 coerce 仍要能产出 disclaimer 兜底。"""
-    from stock_recap.policy import guardrails as gr
+    from agent_platform.policy import guardrails as gr
 
     def boom(*_args, **_kwargs):
         raise RuntimeError("simulated rule crash")

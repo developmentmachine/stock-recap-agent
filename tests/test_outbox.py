@@ -5,8 +5,8 @@ from typing import Any, Dict, List
 
 import pytest
 
-from stock_recap.application.side_effects import outbox
-from stock_recap.infrastructure.persistence.db import init_db
+from agent_platform.application.side_effects import outbox
+from agent_platform.infrastructure.persistence.db import init_db
 
 
 @pytest.fixture
@@ -98,7 +98,7 @@ def test_process_due_eventually_marks_final_after_max_attempts(
     outbox.enqueue(file_db, request_id="req-4", action_type="always_fail")
 
     # 直接把 attempts 推到极限-1，下一次失败应被标 final。
-    from stock_recap.infrastructure.persistence.db import get_conn
+    from agent_platform.infrastructure.persistence.db import get_conn
 
     with get_conn(file_db) as conn:
         conn.execute(

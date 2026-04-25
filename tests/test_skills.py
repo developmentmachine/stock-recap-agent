@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-import stock_recap.config.settings as settings_module
-from stock_recap.skills.loader import (
+import agent_platform.config.settings as settings_module
+from agent_platform.skills.loader import (
     clear_skill_manifest_cache,
     list_registered_skills,
     load_skill_document,
@@ -76,20 +76,20 @@ def test_extra_skill_dir_overrides_daily(monkeypatch, tmp_path):
 
 
 def test_entry_point_skill_bundle(monkeypatch):
-    import stock_recap.skills.loader as loader_mod
+    import agent_platform.skills.loader as loader_mod
 
     class _Eps:
         @staticmethod
         def select(*, group: str):
             from importlib.metadata import EntryPoint
 
-            if group != "stock_recap.skills":
+            if group != "agent_platform.skills":
                 return ()
             return (
                 EntryPoint(
                     name="fixture_ep",
                     value="tests.fixtures.ep_roots:ROOT",
-                    group="stock_recap.skills",
+                    group="agent_platform.skills",
                 ),
             )
 

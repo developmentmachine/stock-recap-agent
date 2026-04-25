@@ -14,16 +14,16 @@ import json
 
 import pytest
 
-from stock_recap.application.recap import generate_once
-from stock_recap.config.settings import Settings
-from stock_recap.domain.models import (
+from agent_platform.application.recap import generate_once
+from agent_platform.config.settings import Settings
+from agent_platform.domain.models import (
     GenerateRequest,
     LlmTokens,
     RecapDaily,
     RecapDailySection,
 )
-from stock_recap.infrastructure.llm.backends import call_llm
-from stock_recap.infrastructure.persistence.db import (
+from agent_platform.infrastructure.llm.backends import call_llm
+from agent_platform.infrastructure.persistence.db import (
     get_conn,
     init_db,
     insert_recap_audit,
@@ -73,7 +73,7 @@ def _settings_via_env(tmp_path, monkeypatch) -> Settings:
     monkeypatch.setenv("RECAP_PUSH_ENABLED", "false")
     monkeypatch.setenv("RECAP_API_KEY", "test-key")
     monkeypatch.setenv("RECAP_AUDIT_ENABLED", "true")
-    import stock_recap.config.settings as _settings_mod
+    import agent_platform.config.settings as _settings_mod
 
     _settings_mod._settings_instance = None  # noqa: SLF001
     return Settings()

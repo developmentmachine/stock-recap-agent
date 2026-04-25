@@ -13,9 +13,9 @@ from typing import Counter, Optional
 import pytest
 from fastapi.testclient import TestClient
 
-from stock_recap.application.experiments import select_variant
-from stock_recap.config.settings import Settings
-from stock_recap.infrastructure.persistence.db import (
+from agent_platform.application.experiments import select_variant
+from agent_platform.config.settings import Settings
+from agent_platform.infrastructure.persistence.db import (
     get_conn,
     init_db,
     list_prompt_experiments,
@@ -33,7 +33,7 @@ def _settings_via_env(tmp_path, monkeypatch) -> Settings:
     monkeypatch.setenv("RECAP_PUSH_ENABLED", "false")
     monkeypatch.setenv("RECAP_API_KEY", "test-key")
     monkeypatch.setenv("RECAP_AUDIT_ENABLED", "true")
-    import stock_recap.config.settings as _settings_mod
+    import agent_platform.config.settings as _settings_mod
 
     _settings_mod._settings_instance = None  # noqa: SLF001
     return Settings()
@@ -220,7 +220,7 @@ def test_pipeline_persists_experiment_id_and_variant(tmp_path, monkeypatch):
     monkeypatch.setenv("RECAP_WXWORK_WEBHOOK_URL", "http://example.invalid/hook")
     monkeypatch.setenv("RECAP_PUSH_ENABLED", "false")
     monkeypatch.setenv("RECAP_AUDIT_ENABLED", "true")
-    import stock_recap.config.settings as _settings_mod
+    import agent_platform.config.settings as _settings_mod
 
     _settings_mod._settings_instance = None  # noqa: SLF001
     settings = _settings_mod.Settings()
@@ -234,8 +234,8 @@ def test_pipeline_persists_experiment_id_and_variant(tmp_path, monkeypatch):
         variants=[("only", "v-experiment", 1)],
     )
 
-    from stock_recap.application.recap import generate_once
-    from stock_recap.domain.models import GenerateRequest
+    from agent_platform.application.recap import generate_once
+    from agent_platform.domain.models import GenerateRequest
 
     req = GenerateRequest(
         mode="daily",
@@ -258,7 +258,7 @@ def test_pipeline_persists_experiment_id_and_variant(tmp_path, monkeypatch):
     assert row["prompt_version"] == "v-experiment"
 
     # recap_audit 同步带上
-    from stock_recap.infrastructure.persistence.db import load_recap_audit
+    from agent_platform.infrastructure.persistence.db import load_recap_audit
 
     audits = load_recap_audit(settings.db_path, request_id=resp.request_id)
     assert len(audits) == 1
@@ -272,14 +272,14 @@ def test_pipeline_no_experiment_keeps_global_prompt_version(tmp_path, monkeypatc
     monkeypatch.setenv("RECAP_WXWORK_WEBHOOK_URL", "http://example.invalid/hook")
     monkeypatch.setenv("RECAP_PUSH_ENABLED", "false")
     monkeypatch.setenv("RECAP_AUDIT_ENABLED", "true")
-    import stock_recap.config.settings as _settings_mod
+    import agent_platform.config.settings as _settings_mod
 
     _settings_mod._settings_instance = None  # noqa: SLF001
     settings = _settings_mod.Settings()
     init_db(settings.db_path)
 
-    from stock_recap.application.recap import generate_once
-    from stock_recap.domain.models import GenerateRequest
+    from agent_platform.application.recap import generate_once
+    from agent_platform.domain.models import GenerateRequest
 
     req = GenerateRequest(
         mode="daily", provider="mock", force_llm=False, skip_trading_check=True
@@ -299,7 +299,7 @@ def test_pipeline_no_experiment_keeps_global_prompt_version(tmp_path, monkeypatc
 
 
 def _client(settings: Settings) -> TestClient:
-    from stock_recap.interfaces.api.app import create_app
+    from agent_platform.interfaces.api.app import create_app
 
     app = create_app()
     return TestClient(app)

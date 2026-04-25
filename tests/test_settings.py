@@ -2,7 +2,7 @@
 import os
 import pytest
 
-from stock_recap.config.settings import Settings, get_settings
+from agent_platform.config.settings import Settings, get_settings
 
 
 def test_defaults(monkeypatch):
@@ -75,7 +75,7 @@ def test_cors_origins_via_env(monkeypatch):
 
 
 def test_get_settings_singleton():
-    import stock_recap.config.settings as settings_module
+    import agent_platform.config.settings as settings_module
     settings_module._settings_instance = None
     s1 = get_settings()
     s2 = get_settings()

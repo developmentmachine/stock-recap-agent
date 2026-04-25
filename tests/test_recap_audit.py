@@ -14,9 +14,9 @@ from typing import List
 import pytest
 from fastapi.testclient import TestClient
 
-from stock_recap.config.settings import Settings
-from stock_recap.domain.models import LlmTokens, RecapDaily, RecapDailySection
-from stock_recap.infrastructure.persistence.db import (
+from agent_platform.config.settings import Settings
+from agent_platform.domain.models import LlmTokens, RecapDaily, RecapDailySection
+from agent_platform.infrastructure.persistence.db import (
     init_db,
     insert_recap_audit,
     load_recap_audit,
@@ -32,7 +32,7 @@ def _settings_via_env(tmp_path, monkeypatch, *, audit_enabled: bool = True) -> S
     monkeypatch.setenv("RECAP_AUDIT_ENABLED", "true" if audit_enabled else "false")
     # 关键：FastAPI DI 内部走 ``get_settings()``，它是模块级单例（不是 lru_cache），
     # 必须显式重置 ``_settings_instance`` 才能让新 env 生效。
-    import stock_recap.config.settings as _settings_mod
+    import agent_platform.config.settings as _settings_mod
     _settings_mod._settings_instance = None  # noqa: SLF001
     return Settings()
 
@@ -140,13 +140,13 @@ def test_pipeline_writes_audit_when_enabled(tmp_path, monkeypatch):
     monkeypatch.setenv("RECAP_PUSH_ENABLED", "false")
     monkeypatch.setenv("RECAP_AUDIT_ENABLED", "true")
 
-    from stock_recap.application.recap import generate_once
-    import stock_recap.config.settings as _settings_mod
+    from agent_platform.application.recap import generate_once
+    import agent_platform.config.settings as _settings_mod
     _settings_mod._settings_instance = None  # noqa: SLF001
     settings = _settings_mod.Settings()
     init_db(settings.db_path)
 
-    from stock_recap.domain.models import GenerateRequest
+    from agent_platform.domain.models import GenerateRequest
 
     req = GenerateRequest(
         mode="daily",
@@ -171,9 +171,9 @@ def test_pipeline_skips_audit_when_disabled(tmp_path, monkeypatch):
     monkeypatch.setenv("RECAP_PUSH_ENABLED", "false")
     monkeypatch.setenv("RECAP_AUDIT_ENABLED", "false")
 
-    from stock_recap.application.recap import generate_once
-    import stock_recap.config.settings as _settings_mod
-    from stock_recap.domain.models import GenerateRequest
+    from agent_platform.application.recap import generate_once
+    import agent_platform.config.settings as _settings_mod
+    from agent_platform.domain.models import GenerateRequest
 
     _settings_mod._settings_instance = None  # noqa: SLF001
     settings = _settings_mod.Settings()
@@ -209,7 +209,7 @@ def test_audit_endpoint_get_by_id(tmp_path, monkeypatch):
         critic_retries_used=0,
     )
 
-    from stock_recap.interfaces.api.app import create_app
+    from agent_platform.interfaces.api.app import create_app
 
     client = TestClient(create_app())
 
@@ -246,7 +246,7 @@ def test_audit_endpoint_list_filter_by_mode(tmp_path, monkeypatch):
             critic_retries_used=0,
         )
 
-    from stock_recap.interfaces.api.app import create_app
+    from agent_platform.interfaces.api.app import create_app
 
     client = TestClient(create_app())
     r = client.get("/v1/audit?mode=daily&limit=10", headers={"X-API-Key": "test-key"})

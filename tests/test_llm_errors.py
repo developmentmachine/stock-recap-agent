@@ -12,8 +12,8 @@ from typing import Any, Dict, List, Tuple
 
 import pytest
 
-from stock_recap.config.settings import Settings
-from stock_recap.domain.models import (
+from agent_platform.config.settings import Settings
+from agent_platform.domain.models import (
     LlmBudgetExceeded,
     LlmBusinessError,
     LlmError,
@@ -23,9 +23,9 @@ from stock_recap.domain.models import (
     LlmTransportError,
     Recap,
 )
-from stock_recap.infrastructure.llm import backends as backends_mod
-from stock_recap.infrastructure.llm.backends import call_llm
-from stock_recap.infrastructure.llm.parse import parse_and_validate
+from agent_platform.infrastructure.llm import backends as backends_mod
+from agent_platform.infrastructure.llm.backends import call_llm
+from agent_platform.infrastructure.llm.parse import parse_and_validate
 
 
 class _CountingProvider:

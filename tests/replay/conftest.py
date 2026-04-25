@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from stock_recap.domain.registries import (
+from agent_platform.domain.registries import (
     LlmBackendSpec,
     default_backend_registry,
 )
-from stock_recap.infrastructure.llm.providers import (
+from agent_platform.infrastructure.llm.providers import (
     default_provider_registry,
     register_provider,
 )

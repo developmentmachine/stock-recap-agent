@@ -6,10 +6,10 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from stock_recap.infrastructure.data.sources.continuity import fetch_continuity
-from stock_recap.infrastructure.data.sources.forward_watchlist import build_forward_watchlist
-from stock_recap.infrastructure.data.sources.lhb import _classify_seat, fetch_lhb
-from stock_recap.infrastructure.data.sources.style_factors import build_style_matrix
+from agent_platform.infrastructure.data.sources.continuity import fetch_continuity
+from agent_platform.infrastructure.data.sources.forward_watchlist import build_forward_watchlist
+from agent_platform.infrastructure.data.sources.lhb import _classify_seat, fetch_lhb
+from agent_platform.infrastructure.data.sources.style_factors import build_style_matrix
 
 
 def test_style_matrix_identifies_small_cap_and_growth():

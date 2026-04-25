@@ -4,9 +4,9 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-import stock_recap.config.settings as settings_module
-from stock_recap.domain.models import GenerateRequest
-from stock_recap.interfaces.api.routes import app
+import agent_platform.config.settings as settings_module
+from agent_platform.domain.models import GenerateRequest
+from agent_platform.interfaces.api.routes import app
 
 
 @pytest.fixture
@@ -69,7 +69,7 @@ def test_recap_stream_error_event_on_phase_failure(
         raise RuntimeError("stream_phase_boom")
 
     monkeypatch.setattr(
-        "stock_recap.application.orchestration.pipeline.collect_snapshot",
+        "agent_platform.application.orchestration.pipeline.collect_snapshot",
         boom,
     )
     lines: list[str] = []

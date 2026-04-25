@@ -18,19 +18,19 @@ from typing import Any, Dict, Iterator
 import pytest
 from fastapi.testclient import TestClient
 
-import stock_recap.config.settings as settings_module
-import stock_recap.infrastructure.persistence.db as db_module
-from stock_recap.config.settings import Settings
-from stock_recap.domain.models import (
+import agent_platform.config.settings as settings_module
+import agent_platform.infrastructure.persistence.db as db_module
+from agent_platform.config.settings import Settings
+from agent_platform.domain.models import (
     Features,
     LlmTokens,
     MarketSnapshot,
     RecapDaily,
     RecapDailySection,
 )
-from stock_recap.domain.principal import PrincipalContext, current_principal
-from stock_recap.domain.run_context import RunContext
-from stock_recap.infrastructure.persistence.db import (
+from agent_platform.domain.principal import PrincipalContext, current_principal
+from agent_platform.domain.run_context import RunContext
+from agent_platform.infrastructure.persistence.db import (
     count_tenants,
     enqueue_pending_action,
     init_db,
@@ -162,8 +162,8 @@ def test_upsert_and_load_tenant_by_api_key_hash(file_db):
 def _build_app_with_settings(settings: Settings):
     """每个 case 重新装一遍 app + 注入 settings，避免 Settings 单例污染。"""
     settings_module._settings_instance = settings
-    from stock_recap.config.settings import get_settings as _get_settings
-    from stock_recap.interfaces.api.app import create_app
+    from agent_platform.config.settings import get_settings as _get_settings
+    from agent_platform.interfaces.api.app import create_app
 
     app = create_app()
     app.dependency_overrides[_get_settings] = lambda: settings

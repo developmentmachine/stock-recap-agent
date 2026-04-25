@@ -83,7 +83,7 @@ LLM 被要求输出 **JSON**，并校验为 **Pydantic 模型**：
 
 | 入口 | 典型场景 | 备注 |
 |------|----------|------|
-| **CLI**（`interfaces/cli.py` → `generate_once`） | 本地运维、脚本、写文件 | 默认 **不 defer** 进化/回测（与线上一致性简单） |
+| **CLI**（`interfaces/cli.py` 平台分发器 → `interfaces/agents/stock_recap_cli.py` → `generate_once`） | 本地运维、脚本、写文件 | 默认 **不 defer** 进化/回测（与线上一致性简单） |
 | **API POST `/v1/recap`** | 系统集成 | defer + `BackgroundTasks` |
 | **API POST `/v1/recap/stream`** | 需要进度展示的前端 | NDJSON；无 `ContextVar` 父 span（线程池限制） |
 | **调度器**（`interfaces/scheduler/jobs.py`） | 固定时刻日终/策略 | 交易日检查；`generate_once` 全链路 |
@@ -139,7 +139,8 @@ LLM 被要求输出 **JSON**，并校验为 **Pydantic 模型**：
 | `infrastructure/persistence/db.py` | SQLite：runs、feedback、evolution、backtest、指标 |
 | `infrastructure/push/` | 企微等推送 |
 | `interfaces/api/routes.py` | FastAPI：鉴权、限流、CORS、JSON/流式 recap、反馈、历史 |
-| `interfaces/cli.py` | 命令行入口 |
+| `interfaces/cli.py` | 平台 CLI 分发器：维护 `AGENTS` 字典，将子命令路由到各 agent；保留 `--mcp-tools` 等平台级标志 |
+| `interfaces/agents/<agent>_cli.py` | 单个 agent 的 CLI 模块（实现 `register_subparser` / `run`），新 agent 在此扩展 |
 | `interfaces/mcp_stdio.py` | MCP 工具进程（与进程内 tools 语义对齐） |
 | `interfaces/scheduler/jobs.py` | APScheduler 与交易日逻辑 |
 | `config/settings.py` | Pydantic Settings / 环境变量 |

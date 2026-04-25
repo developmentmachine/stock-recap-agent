@@ -1,4 +1,4 @@
-from stock_recap.resources.prompts import loader
+from agent_platform.resources.prompts import loader
 
 
 def test_manifest_bundle_version():

@@ -1,8 +1,8 @@
 """回测评分器注册与多实现。"""
 from __future__ import annotations
 
-from stock_recap.application.backtest.registry import resolve_backtest_strategy
-from stock_recap.domain.models import MarketSnapshot, RecapStrategy
+from agent_platform.application.backtest.registry import resolve_backtest_strategy
+from agent_platform.domain.models import MarketSnapshot, RecapStrategy
 
 
 def test_normalized_overlap_handles_compound_mainline():

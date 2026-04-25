@@ -4,9 +4,9 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-import stock_recap.config.settings as settings_module
-from stock_recap.infrastructure.persistence.db import init_db, upsert_tenant
-from stock_recap.interfaces.api.routes import app
+import agent_platform.config.settings as settings_module
+from agent_platform.infrastructure.persistence.db import init_db, upsert_tenant
+from agent_platform.interfaces.api.routes import app
 
 
 @pytest.fixture
@@ -106,8 +106,8 @@ def test_jobs_tenant_isolation(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Non
         status="active",
     )
 
-    from stock_recap.config.settings import Settings, get_settings
-    from stock_recap.interfaces.api.app import create_app
+    from agent_platform.config.settings import Settings, get_settings
+    from agent_platform.interfaces.api.app import create_app
 
     settings_module._settings_instance = None
     settings_one = Settings()

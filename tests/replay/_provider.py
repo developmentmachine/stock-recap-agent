@@ -16,8 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from stock_recap.config.settings import Settings
-from stock_recap.domain.models import LlmTokens, Mode, Recap
+from agent_platform.config.settings import Settings
+from agent_platform.domain.models import LlmTokens, Mode, Recap
 
 
 @dataclass
